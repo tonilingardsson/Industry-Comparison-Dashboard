@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'motion/react';
-import { ArrowRight, Factory, MapPin, TrendingUp } from 'lucide-react';
+import { ArrowRight, Download, Factory, FileText, MapPin, Save, TrendingUp } from 'lucide-react';
+import { AccountGate } from './components/AccountGate';
 import { IndustrySelector } from './components/IndustrySelector';
 import { ComparisonCard } from './components/ComparisonCard';
 import { EmissionsChart } from './components/EmissionsChart';
@@ -20,6 +21,8 @@ const industries = [
   'Textile Industry',
   'Pharmaceutical',
 ];
+
+const accountStorageKey = 'industry-duel-user';
 
 // Mock data generator
 function generateMockData(industry1: string, industry2: string) {
@@ -49,18 +52,85 @@ function generateMockData(industry1: string, industry2: string) {
   return { emissionsData, facilities, locations1, locations2 };
 }
 
+type ComparisonData = ReturnType<typeof generateMockData>;
+
+interface ActiveComparison {
+  industry1: string;
+  industry2: string;
+  data: ComparisonData;
+}
+
+function averageEmissions(data: ComparisonData['emissionsData'], key: 'industry1' | 'industry2') {
+  return data.reduce((sum, item) => sum + item[key], 0) / data.length;
+}
+
 export default function App() {
   const [industry1, setIndustry1] = useState('');
   const [industry2, setIndustry2] = useState('');
-  const [showComparison, setShowComparison] = useState(false);
+  const [comparison, setComparison] = useState<ActiveComparison | null>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+
+  useEffect(() => {
+    const storedUser = window.localStorage.getItem(accountStorageKey);
+
+    if (!storedUser) {
+      return;
+    }
+
+    try {
+      const parsedUser = JSON.parse(storedUser) as { email?: string };
+      if (parsedUser.email) {
+        setUserEmail(parsedUser.email);
+      }
+    } catch {
+      window.localStorage.removeItem(accountStorageKey);
+    }
+  }, []);
 
   const handleCompare = () => {
     if (industry1 && industry2 && industry1 !== industry2) {
-      setShowComparison(true);
+      setComparison({
+        industry1,
+        industry2,
+        data: generateMockData(industry1, industry2),
+      });
     }
   };
 
-  const mockData = industry1 && industry2 ? generateMockData(industry1, industry2) : null;
+  const handleLogin = (email: string) => {
+    window.localStorage.setItem(accountStorageKey, JSON.stringify({ email }));
+    setUserEmail(email);
+  };
+
+  const handleLogout = () => {
+    window.localStorage.removeItem(accountStorageKey);
+    setUserEmail(null);
+  };
+
+  const reportInsights = useMemo(() => {
+    if (!comparison) {
+      return null;
+    }
+
+    const average1 = averageEmissions(comparison.data.emissionsData, 'industry1');
+    const average2 = averageEmissions(comparison.data.emissionsData, 'industry2');
+    const higherEmissionIndustry = average1 >= average2 ? comparison.industry1 : comparison.industry2;
+    const lowerEmissionIndustry = average1 >= average2 ? comparison.industry2 : comparison.industry1;
+    const emissionsGap = Math.abs(average1 - average2);
+    const facilityGap = Math.abs(comparison.data.facilities.count1 - comparison.data.facilities.count2);
+    const widerFacilityIndustry =
+      comparison.data.facilities.count1 >= comparison.data.facilities.count2
+        ? comparison.industry1
+        : comparison.industry2;
+
+    return {
+      emissionsGap,
+      facilityGap,
+      higherEmissionIndustry,
+      lowerEmissionIndustry,
+      widerFacilityIndustry,
+    };
+  }, [comparison]);
 
   return (
     <div className="min-h-screen bg-[#111b24] text-[#14212b]">
@@ -139,7 +209,7 @@ export default function App() {
         </motion.div>
 
         {/* Comparison Results */}
-        {showComparison && mockData && (
+        {comparison && (
           <div className="max-w-7xl mx-auto space-y-8">
             {/* Emissions Trends */}
             <ComparisonCard
@@ -147,27 +217,27 @@ export default function App() {
               icon={<TrendingUp className="w-6 h-6" />}
               delay={0.3}
               shareId="emission-trends"
-              shareText={`I compared emission trends for ${industry1} and ${industry2} in Industry Duel, an Icons Of open data dashboard for exploring industrial impact across Europe.`}
+              shareText={`I compared emission trends for ${comparison.industry1} and ${comparison.industry2} in Industry Duel, an Icons Of open data dashboard for exploring industrial impact across Europe.`}
             >
               <EmissionsChart
-                industry1={industry1}
-                industry2={industry2}
-                data={mockData.emissionsData}
+                industry1={comparison.industry1}
+                industry2={comparison.industry2}
+                data={comparison.data.emissionsData}
               />
               <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="border-l-4 border-[#25a9e0] bg-[#eef9fd] p-4">
                   <p className="mb-1 text-sm text-[#526371]">Average annual emissions</p>
                   <p className="text-2xl font-black text-[#168fca]">
-                    {(mockData.emissionsData.reduce((sum, d) => sum + d.industry1, 0) / mockData.emissionsData.length).toFixed(0).toLocaleString()} t
+                    {averageEmissions(comparison.data.emissionsData, 'industry1').toFixed(0).toLocaleString()} t
                   </p>
-                  <p className="mt-1 text-xs text-[#526371]">{industry1}</p>
+                  <p className="mt-1 text-xs text-[#526371]">{comparison.industry1}</p>
                 </div>
                 <div className="border-l-4 border-[#f05a9d] bg-[#fff0f7] p-4">
                   <p className="mb-1 text-sm text-[#526371]">Average annual emissions</p>
                   <p className="text-2xl font-black text-[#d83d87]">
-                    {(mockData.emissionsData.reduce((sum, d) => sum + d.industry2, 0) / mockData.emissionsData.length).toFixed(0).toLocaleString()} t
+                    {averageEmissions(comparison.data.emissionsData, 'industry2').toFixed(0).toLocaleString()} t
                   </p>
-                  <p className="mt-1 text-xs text-[#526371]">{industry2}</p>
+                  <p className="mt-1 text-xs text-[#526371]">{comparison.industry2}</p>
                 </div>
               </div>
             </ComparisonCard>
@@ -178,20 +248,20 @@ export default function App() {
               icon={<Factory className="w-6 h-6" />}
               delay={0.4}
               shareId="facility-counts"
-              shareText={`I compared facility counts for ${industry1} and ${industry2} in Industry Duel. The dashboard makes European industrial data easier to scan and discuss.`}
+              shareText={`I compared facility counts for ${comparison.industry1} and ${comparison.industry2} in Industry Duel. The dashboard makes European industrial data easier to scan and discuss.`}
             >
               <FacilitiesComparison
-                industry1={industry1}
-                industry2={industry2}
-                count1={mockData.facilities.count1}
-                count2={mockData.facilities.count2}
+                industry1={comparison.industry1}
+                industry2={comparison.industry2}
+                count1={comparison.data.facilities.count1}
+                count2={comparison.data.facilities.count2}
               />
               <div className="mt-4 text-center">
                 <p className="text-sm text-[#526371]">
-                  {mockData.facilities.count1 > mockData.facilities.count2 ? (
-                    <span><strong>{industry1}</strong> has <strong>{Math.abs(mockData.facilities.count1 - mockData.facilities.count2)}</strong> more facilities</span>
-                  ) : mockData.facilities.count2 > mockData.facilities.count1 ? (
-                    <span><strong>{industry2}</strong> has <strong>{Math.abs(mockData.facilities.count1 - mockData.facilities.count2)}</strong> more facilities</span>
+                  {comparison.data.facilities.count1 > comparison.data.facilities.count2 ? (
+                    <span><strong>{comparison.industry1}</strong> has <strong>{Math.abs(comparison.data.facilities.count1 - comparison.data.facilities.count2)}</strong> more facilities</span>
+                  ) : comparison.data.facilities.count2 > comparison.data.facilities.count1 ? (
+                    <span><strong>{comparison.industry2}</strong> has <strong>{Math.abs(comparison.data.facilities.count1 - comparison.data.facilities.count2)}</strong> more facilities</span>
                   ) : (
                     <span>Both industries have an equal number of facilities</span>
                   )}
@@ -205,27 +275,93 @@ export default function App() {
               icon={<MapPin className="w-6 h-6" />}
               delay={0.5}
               shareId="geographic-distribution"
-              shareText={`I explored the geographic distribution of ${industry1} and ${industry2} facilities in Industry Duel, using open data to compare industrial footprints across Europe.`}
+              shareText={`I explored the geographic distribution of ${comparison.industry1} and ${comparison.industry2} facilities in Industry Duel, using open data to compare industrial footprints across Europe.`}
             >
               <GeographicSpread
-                industry1={industry1}
-                industry2={industry2}
-                locations1={mockData.locations1}
-                locations2={mockData.locations2}
+                industry1={comparison.industry1}
+                industry2={comparison.industry2}
+                locations1={comparison.data.locations1}
+                locations2={comparison.data.locations2}
               />
               <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="border-l-4 border-[#25a9e0] bg-[#eef9fd] p-4 text-center">
                   <p className="mb-1 text-sm text-[#526371]">Facilities across Europe</p>
-                  <p className="text-2xl font-black text-[#168fca]">{mockData.locations1.length} countries</p>
-                  <p className="mt-1 text-xs text-[#526371]">{industry1}</p>
+                  <p className="text-2xl font-black text-[#168fca]">{comparison.data.locations1.length} countries</p>
+                  <p className="mt-1 text-xs text-[#526371]">{comparison.industry1}</p>
                 </div>
                 <div className="border-l-4 border-[#f05a9d] bg-[#fff0f7] p-4 text-center">
                   <p className="mb-1 text-sm text-[#526371]">Facilities across Europe</p>
-                  <p className="text-2xl font-black text-[#d83d87]">{mockData.locations2.length} countries</p>
-                  <p className="mt-1 text-xs text-[#526371]">{industry2}</p>
+                  <p className="text-2xl font-black text-[#d83d87]">{comparison.data.locations2.length} countries</p>
+                  <p className="mt-1 text-xs text-[#526371]">{comparison.industry2}</p>
                 </div>
               </div>
             </ComparisonCard>
+
+            <motion.section
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5, delay: 0.6 }}
+              className="rounded-lg border border-white/70 bg-white p-5 shadow-xl shadow-black/15 sm:p-8"
+            >
+              <div className="mb-6 flex items-center gap-3">
+                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-[#14212b] text-[#ff7a18]">
+                  <FileText className="h-6 w-6" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-[#14212b]">Detailed Benchmark Report</h3>
+                  <p className="text-sm text-[#526371]">Optional account unlock for deeper analysis.</p>
+                </div>
+              </div>
+
+              <AccountGate userEmail={userEmail} onLogin={handleLogin} onLogout={handleLogout} />
+
+              {userEmail && reportInsights && (
+                <div className="mt-6 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
+                  <div className="rounded-lg border border-[#d9e2e8] p-5">
+                    <p className="mb-4 text-sm font-bold text-[#14212b]">Unlocked insights</p>
+                    <div className="grid gap-4 sm:grid-cols-3">
+                      <div>
+                        <p className="text-xs uppercase text-[#526371]">Emission gap</p>
+                        <p className="mt-1 text-2xl font-black text-[#14212b]">
+                          {reportInsights.emissionsGap.toFixed(0).toLocaleString()} t
+                        </p>
+                        <p className="mt-1 text-xs leading-5 text-[#526371]">
+                          {reportInsights.higherEmissionIndustry} averages higher than {reportInsights.lowerEmissionIndustry}.
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase text-[#526371]">Facility gap</p>
+                        <p className="mt-1 text-2xl font-black text-[#14212b]">{reportInsights.facilityGap}</p>
+                        <p className="mt-1 text-xs leading-5 text-[#526371]">
+                          {reportInsights.widerFacilityIndustry} has the larger facility footprint.
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase text-[#526371]">Priority next step</p>
+                        <p className="mt-1 text-base font-black text-[#14212b]">Regional review</p>
+                        <p className="mt-1 text-xs leading-5 text-[#526371]">
+                          Compare top emitting countries before setting reduction targets.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-[#d9e2e8] bg-[#f8fafb] p-5">
+                    <p className="mb-4 text-sm font-bold text-[#14212b]">Account actions</p>
+                    <div className="grid gap-3">
+                      <button className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#f3703d] px-4 py-3 text-sm font-bold text-white transition hover:bg-[#ff7a18]">
+                        <Download className="h-4 w-4" />
+                        Export report
+                      </button>
+                      <button className="inline-flex items-center justify-center gap-2 rounded-lg border border-[#14212b]/15 bg-white px-4 py-3 text-sm font-bold text-[#14212b] transition hover:border-[#14212b]/30">
+                        <Save className="h-4 w-4" />
+                        Save comparison
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </motion.section>
           </div>
         )}
 
