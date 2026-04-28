@@ -1,4 +1,6 @@
-import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { useEffect, useRef } from 'react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 
 interface GeographicSpreadProps {
   industry1: string;
@@ -7,70 +9,96 @@ interface GeographicSpreadProps {
   locations2: Array<{ country: string; lat: number; lon: number }>;
 }
 
+const industryColors = {
+  first: '#25a9e0',
+  second: '#f05a9d',
+};
+
+function addMarkers(
+  map: L.Map,
+  locations: Array<{ country: string; lat: number; lon: number }>,
+  industry: string,
+  color: string,
+) {
+  return locations.map((location) =>
+    L.circleMarker([location.lat, location.lon], {
+      radius: 7,
+      color,
+      fillColor: color,
+      fillOpacity: 0.78,
+      opacity: 0.95,
+      weight: 2,
+    })
+      .bindPopup(
+        `<strong>${industry}</strong><br/>${location.country}<br/>${location.lat.toFixed(3)}, ${location.lon.toFixed(3)}`,
+      )
+      .addTo(map),
+  );
+}
+
 export function GeographicSpread({ industry1, industry2, locations1, locations2 }: GeographicSpreadProps) {
-  const data1 = locations1.map(loc => ({ ...loc, z: 100, industry: industry1 }));
-  const data2 = locations2.map(loc => ({ ...loc, z: 100, industry: industry2 }));
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<L.Map | null>(null);
+
+  useEffect(() => {
+    if (!containerRef.current || mapRef.current) {
+      return;
+    }
+
+    const map = L.map(containerRef.current, {
+      center: [56, 10],
+      zoom: 4,
+      scrollWheelZoom: false,
+    });
+
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 18,
+      attribution: '&copy; OpenStreetMap contributors',
+    }).addTo(map);
+
+    mapRef.current = map;
+
+    return () => {
+      map.remove();
+      mapRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) {
+      return;
+    }
+
+    const markers = [
+      ...addMarkers(map, locations1, industry1, industryColors.first),
+      ...addMarkers(map, locations2, industry2, industryColors.second),
+    ];
+
+    const points = [...locations1, ...locations2].map((location) => [location.lat, location.lon] as L.LatLngTuple);
+    if (points.length > 0) {
+      map.fitBounds(L.latLngBounds(points), { padding: [28, 28], maxZoom: 7 });
+    } else {
+      map.setView([56, 10], 4);
+    }
+
+    return () => {
+      markers.forEach((marker) => marker.remove());
+    };
+  }, [industry1, industry2, locations1, locations2]);
 
   return (
     <div className="space-y-4">
-      <ResponsiveContainer width="100%" height={300}>
-        <ScatterChart>
-          <CartesianGrid strokeDasharray="3 3" stroke="#d9e2e8" />
-          <XAxis
-            type="number"
-            dataKey="lon"
-            name="Longitude"
-            stroke="#526371"
-            style={{ fontSize: '12px' }}
-            domain={[-25, 35]}
-          />
-          <YAxis
-            type="number"
-            dataKey="lat"
-            name="Latitude"
-            stroke="#526371"
-            style={{ fontSize: '12px' }}
-            domain={[34, 72]}
-          />
-          <Tooltip
-            cursor={{ strokeDasharray: '3 3' }}
-            contentStyle={{
-              backgroundColor: 'white',
-              border: '1px solid #d9e2e8',
-              borderRadius: '8px',
-              boxShadow: '0 16px 32px -20px rgba(20, 33, 43, 0.45)'
-            }}
-            formatter={(value: any, name: string, props: any) => {
-              if (name === 'lat') return [`${value}°`, 'Latitude'];
-              if (name === 'lon') return [`${value}°`, 'Longitude'];
-              return [value, name];
-            }}
-            labelFormatter={(value: any, payload: any) => {
-              if (payload && payload[0]) {
-                return payload[0].payload.country;
-              }
-              return '';
-            }}
-          />
-          <Scatter name={industry1} data={data1} fill="#25a9e0">
-            {data1.map((entry, index) => (
-              <Cell key={`cell-1-${index}`} fill="#25a9e0" opacity={0.7} />
-            ))}
-          </Scatter>
-          <Scatter name={industry2} data={data2} fill="#f05a9d">
-            {data2.map((entry, index) => (
-              <Cell key={`cell-2-${index}`} fill="#f05a9d" opacity={0.7} />
-            ))}
-          </Scatter>
-        </ScatterChart>
-      </ResponsiveContainer>
-      <div className="flex gap-6 justify-center">
+      <div className="overflow-hidden rounded-lg border border-[#d9e2e8]">
+        <div ref={containerRef} className="h-[360px] w-full" />
+      </div>
+      <div className="flex flex-wrap justify-center gap-6">
         <div className="flex items-center gap-2">
-          <div className="h-4 w-4 rounded-full bg-[#25a9e0]"></div>
+          <div className="h-4 w-4 rounded-full bg-[#25a9e0]" />
           <span className="text-sm text-[#526371]">{industry1}</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="h-4 w-4 rounded-full bg-[#f05a9d]"></div>
+          <div className="h-4 w-4 rounded-full bg-[#f05a9d]" />
           <span className="text-sm text-[#526371]">{industry2}</span>
         </div>
       </div>

@@ -838,16 +838,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Data Source Footer */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.6, delay: 0.8 }}
-          className="mt-16 text-center text-sm text-white/56"
-        >
-          <p>Data source: raw E-PRTR files from Varberg-Hackathon/hackathon_data/eprtr_raw/</p>
-          <p className="mt-1">Industry names are extracted from all raw files; comparison metrics cover air, water, off-site transfers, and waste transfers.</p>
-        </motion.div>
       </div>
     </div>
   );
