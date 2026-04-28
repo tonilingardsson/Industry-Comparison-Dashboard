@@ -18,6 +18,21 @@ function validateEmail(email: string) {
   return '';
 }
 
+const unlockBenefits = [
+  {
+    title: 'Full website PDF',
+    description: 'Save this exact comparison view as a printable report.',
+  },
+  {
+    title: 'Country-by-country detail',
+    description: 'Inspect where each selected industry reports the largest footprint.',
+  },
+  {
+    title: 'Check factory or protected-area around your room',
+    description: 'Use browser location to check nearby E-PRTR factories and Swedish protected-area records.',
+  },
+];
+
 export function AccountGate({ userEmail, onLogin, onLogout }: AccountGateProps) {
   const [email, setEmail] = useState('');
   const [error, setError] = useState('');
@@ -37,11 +52,16 @@ export function AccountGate({ userEmail, onLogin, onLogout }: AccountGateProps) 
 
   if (userEmail) {
     return (
-      <div className="rounded-lg border border-[#25a9e0]/30 bg-[#eef9fd] p-5">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="rounded-lg border border-[#d9e2e8] bg-white p-5 sm:p-6">
+        <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <p className="text-sm font-bold text-[#14212b]">Your detailed report is unlocked</p>
-            <p className="mt-1 text-sm text-[#526371]">Saved to this browser as {userEmail}</p>
+            <p className="text-xl font-black text-[#14212b]">What unlocks</p>
+            <p className="mt-2 text-base leading-7 text-[#526371]">
+              A cleaner package for sharing internally or reviewing with a customer.
+            </p>
+            <p className="mt-2 text-xs font-bold uppercase tracking-wide text-[#168fca]">
+              Unlocked for {userEmail}
+            </p>
           </div>
           <button
             type="button"
@@ -52,44 +72,58 @@ export function AccountGate({ userEmail, onLogin, onLogout }: AccountGateProps) 
             Log out
           </button>
         </div>
+
+        <div className="divide-y divide-[#d9e2e8] rounded-lg border border-[#d9e2e8]">
+          {unlockBenefits.map((benefit) => (
+            <div key={benefit.title} className="flex gap-4 p-5">
+              <CheckCircle className="mt-0.5 h-6 w-6 shrink-0 text-[#168fca]" />
+              <div>
+                <p className="text-lg font-black leading-tight text-[#14212b]">{benefit.title}</p>
+                <p className="mt-2 text-base leading-7 text-[#526371]">{benefit.description}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-5 rounded-lg bg-[#14212b] p-5 text-white">
+          <p className="text-xs font-bold uppercase text-white/58">Preview</p>
+          <div className="mt-4 flex items-center gap-4">
+            <Download className="h-6 w-6 shrink-0 text-[#ff7a18]" />
+            <div>
+              <p className="text-lg font-black leading-tight">PDF-ready benchmark pack</p>
+              <p className="mt-2 text-sm leading-6 text-white/68">Full report, map snapshot, and country breakdown.</p>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="overflow-hidden rounded-lg border border-[#d9e2e8] bg-[#f8fafb]">
-      <div className="grid lg:grid-cols-[1.05fr_0.95fr]">
-        <div className="p-5 sm:p-6">
-          <div className="mb-5 inline-flex items-center gap-2 rounded-lg bg-[#14212b] px-3 py-2 text-xs font-bold text-white">
-            <Sparkles className="h-4 w-4 text-[#ff7a18]" />
-            30-second unlock
-          </div>
-          <div className="mb-5 flex items-start gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#14212b] text-[#ff7a18]">
-              <Lock className="h-5 w-5" />
+    <div className="overflow-hidden rounded-lg border border-[#d9e2e8] bg-white">
+      <div className="grid lg:grid-cols-[0.9fr_1.1fr]">
+        <div className="bg-[#f8fafb] p-5 sm:p-6">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div className="inline-flex items-center gap-2 rounded-lg bg-[#14212b] px-3 py-2 text-xs font-bold text-white">
+              <Sparkles className="h-4 w-4 text-[#ff7a18]" />
+              30-second unlock
             </div>
-            <div>
-              <p className="text-xl font-black leading-tight text-[#14212b]">Get the benchmark brief behind these charts</p>
-              <p className="mt-2 text-sm leading-6 text-[#526371]">
-                Keep the free comparison. Add an email only if you want a saved, export-ready view with the most important signals pulled out for you.
-              </p>
-            </div>
+            <span className="rounded-lg bg-[#fff0f7] px-3 py-1 text-xs font-bold text-[#d83d87]">Account required</span>
           </div>
 
-          <div className="mb-5 grid gap-3 sm:grid-cols-3">
-            {[
-              'Top risk signal',
-              'Export-ready summary',
-              'Saved comparison',
-            ].map((benefit) => (
-              <div key={benefit} className="rounded-lg border border-[#d9e2e8] bg-white p-3">
-                <CheckCircle className="mb-2 h-4 w-4 text-[#168fca]" />
-                <p className="text-xs font-bold text-[#14212b]">{benefit}</p>
-              </div>
-            ))}
+          <div className="mb-5">
+            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-[#14212b] text-[#ff7a18]">
+              <Lock className="h-6 w-6" />
+            </div>
+            <p className="text-2xl font-black leading-tight text-[#14212b]">
+              Want the full report and country detail?
+            </p>
+            <p className="mt-3 text-sm leading-6 text-[#526371]">
+              Create an account to turn this comparison into a PDF-ready website copy, a country-by-country view, and saved analysis.
+            </p>
           </div>
 
-          <form onSubmit={handleSubmit} className="grid gap-3 sm:grid-cols-[1fr_auto]">
+          <form onSubmit={handleSubmit} className="grid gap-3">
             <label className="sr-only" htmlFor="email">
               Email
             </label>
@@ -106,9 +140,9 @@ export function AccountGate({ userEmail, onLogin, onLogout }: AccountGateProps) 
             </div>
             <button
               type="submit"
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#f3703d] px-5 py-3 text-sm font-bold text-white transition hover:bg-[#ff7a18]"
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#f3703d] px-5 py-3 text-sm font-bold text-white shadow-lg shadow-[#f3703d]/20 transition hover:bg-[#ff7a18]"
             >
-              Unlock report
+              Create account
               <ArrowRight className="h-4 w-4" />
             </button>
           </form>
@@ -119,28 +153,32 @@ export function AccountGate({ userEmail, onLogin, onLogout }: AccountGateProps) 
           </p>
         </div>
 
-        <div className="border-t border-[#d9e2e8] bg-white p-5 sm:p-6 lg:border-l lg:border-t-0">
-          <div className="mb-4 flex items-center justify-between">
-            <p className="text-sm font-black text-[#14212b]">Preview of what unlocks</p>
-            <span className="rounded-lg bg-[#fff0f7] px-3 py-1 text-xs font-bold text-[#d83d87]">Locked</span>
-          </div>
-          <div className="space-y-3">
-            <div className="rounded-lg border border-[#d9e2e8] p-4">
-              <p className="text-xs uppercase text-[#526371]">Executive signal</p>
-              <div className="mt-3 h-3 w-10/12 rounded bg-[#14212b]/20" />
-              <div className="mt-2 h-3 w-7/12 rounded bg-[#14212b]/10" />
-            </div>
-            <div className="rounded-lg border border-[#d9e2e8] p-4">
-              <p className="text-xs uppercase text-[#526371]">Export pack</p>
-              <div className="mt-3 flex items-center gap-2 text-sm font-bold text-[#14212b]">
-                <Download className="h-4 w-4 text-[#f3703d]" />
-                PDF + CSV summary
+        <div className="border-t border-[#d9e2e8] p-5 sm:p-6 lg:border-l lg:border-t-0">
+          <p className="mb-1 text-sm font-black text-[#14212b]">What unlocks</p>
+          <p className="mb-5 text-sm leading-6 text-[#526371]">
+            A cleaner package for sharing internally or reviewing with a customer.
+          </p>
+
+          <div className="divide-y divide-[#d9e2e8] rounded-lg border border-[#d9e2e8]">
+            {unlockBenefits.map((benefit) => (
+              <div key={benefit.title} className="flex gap-3 p-4">
+                <CheckCircle className="mt-0.5 h-5 w-5 shrink-0 text-[#168fca]" />
+                <div>
+                  <p className="text-sm font-black text-[#14212b]">{benefit.title}</p>
+                  <p className="mt-1 text-sm leading-5 text-[#526371]">{benefit.description}</p>
+                </div>
               </div>
-            </div>
-            <div className="rounded-lg border border-[#d9e2e8] p-4">
-              <p className="text-xs uppercase text-[#526371]">Recommended next step</p>
-              <div className="mt-3 h-3 w-9/12 rounded bg-[#25a9e0]/25" />
-              <div className="mt-2 h-3 w-6/12 rounded bg-[#f05a9d]/20" />
+            ))}
+          </div>
+
+          <div className="mt-5 rounded-lg bg-[#14212b] p-4 text-white">
+            <p className="text-xs font-bold uppercase text-white/58">Preview</p>
+            <div className="mt-3 flex items-center gap-3">
+              <Download className="h-5 w-5 text-[#ff7a18]" />
+              <div>
+                <p className="text-sm font-black">PDF-ready benchmark pack</p>
+                <p className="mt-1 text-xs leading-5 text-white/68">Full report, map snapshot, and country breakdown.</p>
+              </div>
             </div>
           </div>
         </div>

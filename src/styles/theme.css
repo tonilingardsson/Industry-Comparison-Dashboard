@@ -179,3 +179,23 @@
     line-height: 1.5;
   }
 }
+
+@media print {
+  @page {
+    margin: 14mm;
+  }
+
+  body {
+    background: #ffffff !important;
+    color: #14212b !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  button,
+  input,
+  select,
+  .leaflet-control-container {
+    display: none !important;
+  }
+}

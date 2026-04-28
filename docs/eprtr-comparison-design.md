@@ -54,6 +54,17 @@ For each selected industry pair, category, and metric, the app calculates:
 
 When a category has both sector-level and facility-level files, sector-level rows provide trend totals and facility-level rows provide facility counts and map points. When a category only has facility-level files, facility rows provide both trend values and facility details.
 
+## VIP Near-Me Check
+
+The unlocked account section includes a location check:
+
+- Browser geolocation provides the user's current latitude and longitude.
+- Nearby factories are computed from raw E-PRTR facility rows with `Latitude`, `Longitude`, `facilityName`, `city`, `countryName`, and `EPRTR_SectorName`.
+- Distances use the haversine formula and show the closest raw E-PRTR facilities within 50 km.
+- The Naturvårdsverket panel is Sweden-specific. It resolves the user's municipality and then checks Naturvårdsverket protected-area records for matching municipality text.
+
+The app does not keep a hardcoded factory list. Facility options come from the raw CSV files loaded at runtime.
+
 ## Unit Handling
 
 The raw files do not include a per-row unit column. The app displays selected metrics as `t/year`:

@@ -1,6 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'motion/react';
-import { ArrowRight, ChevronDown, Download, Factory, FileText, MapPin, Save, TrendingUp } from 'lucide-react';
+import {
+  ArrowRight,
+  ChevronDown,
+  Download,
+  Factory,
+  FileText,
+  Loader2,
+  LocateFixed,
+  MapPin,
+  ShieldCheck,
+  TrendingUp,
+} from 'lucide-react';
 import { AccountGate } from './components/AccountGate';
 import { IndustrySelector } from './components/IndustrySelector';
 import { ComparisonCard } from './components/ComparisonCard';
@@ -30,6 +41,14 @@ interface FacilityLocation {
   lon: number;
 }
 
+interface FacilitySummary extends FacilityLocation {
+  id: string;
+  name: string;
+  sectorName: string;
+  city: string;
+  sourceFile: string;
+}
+
 interface MetricData {
   valuesByYear: Map<number, number>;
   facilityIds: Set<string>;
@@ -51,7 +70,30 @@ interface EprtrDataset {
   industries: string[];
   categories: CategoryDataset[];
   categoriesById: Map<string, CategoryDataset>;
+  allFacilities: FacilitySummary[];
 }
+
+interface NearbyFactory extends FacilitySummary {
+  distanceKm: number;
+}
+
+interface ProtectedAreaHit {
+  name: string;
+  type: string;
+  municipality: string;
+  areaHa: number | null;
+}
+
+interface NearbyResult {
+  lat: number;
+  lon: number;
+  factories: NearbyFactory[];
+  protectedAreas: ProtectedAreaHit[];
+  municipality: string | null;
+  protectedAreaNote: string;
+}
+
+type NearbyStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 function parseCsvRows(csvText: string): CsvRow[] {
   const rows: string[][] = [];
@@ -193,6 +235,34 @@ function addFacilityPoint(metricData: MetricData, row: CsvRow, amount: number) {
   });
 }
 
+function addFacilitySummary(facilities: Map<string, FacilitySummary>, row: CsvRow, sourceFile: string) {
+  const latitude = numericValue(row.Latitude);
+  const longitude = numericValue(row.Longitude);
+  const sectorName = row.EPRTR_SectorName;
+
+  if (latitude === null || longitude === null || !sectorName) {
+    return;
+  }
+
+  const facilityId = row.FacilityInspireId || `${row.countryName}-${row.facilityName}-${row.city}-${latitude}-${longitude}`;
+  const facilityKey = `${facilityId}-${latitude}-${longitude}`;
+
+  if (facilities.has(facilityKey)) {
+    return;
+  }
+
+  facilities.set(facilityKey, {
+    id: facilityId,
+    name: row.facilityName || 'Unnamed facility',
+    sectorName,
+    country: row.countryName || 'Unknown country',
+    city: row.city || 'Unknown city',
+    lat: latitude,
+    lon: longitude,
+    sourceFile,
+  });
+}
+
 function addIndustryNames(industryNames: Set<string>, csvText: string) {
   parseCsvRows(csvText).forEach((row) => {
     if (row.EPRTR_SectorName) {
@@ -266,6 +336,7 @@ function getCategory(categoriesById: Map<string, CategoryDataset>, filename: str
 function buildEprtrDataset(rawCsvByFilename: Record<string, string>): EprtrDataset {
   const industryNames = new Set<string>();
   const categoriesById = new Map<string, CategoryDataset>();
+  const facilitySummaries = new Map<string, FacilitySummary>();
   const parsedFiles = Object.entries(rawCsvByFilename).map(([filename, csvText]) => {
     addIndustryNames(industryNames, csvText);
     const rows = parseCsvRows(csvText);
@@ -309,6 +380,7 @@ function buildEprtrDataset(rawCsvByFilename: Record<string, string>): EprtrDatas
 
         if (!isSectorFile) {
           addFacilityPoint(metricData, row, amount);
+          addFacilitySummary(facilitySummaries, row, filename);
         }
       });
     });
@@ -330,8 +402,11 @@ function buildEprtrDataset(rawCsvByFilename: Record<string, string>): EprtrDatas
 
   const sortedCategoriesById = new Map(categories.map((category) => [category.id, category]));
   const industries = Array.from(industryNames).sort((industryA, industryB) => industryA.localeCompare(industryB));
+  const allFacilities = Array.from(facilitySummaries.values()).sort((facilityA, facilityB) =>
+    facilityA.name.localeCompare(facilityB.name),
+  );
 
-  return { industries, categories, categoriesById: sortedCategoriesById };
+  return { industries, categories, categoriesById: sortedCategoriesById, allFacilities };
 }
 
 function getCategoryYears(category: CategoryDataset, metricName: string) {
@@ -429,6 +504,133 @@ function averageEmissions(data: ComparisonData['emissionsData'], key: 'industry1
   return data.reduce((sum, item) => sum + item[key], 0) / data.length;
 }
 
+function distanceKm(latA: number, lonA: number, latB: number, lonB: number) {
+  const earthRadiusKm = 6371;
+  const toRadians = (degrees: number) => (degrees * Math.PI) / 180;
+  const deltaLat = toRadians(latB - latA);
+  const deltaLon = toRadians(lonB - lonA);
+  const originLat = toRadians(latA);
+  const targetLat = toRadians(latB);
+
+  const haversine =
+    Math.sin(deltaLat / 2) ** 2 +
+    Math.cos(originLat) * Math.cos(targetLat) * Math.sin(deltaLon / 2) ** 2;
+
+  return earthRadiusKm * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+}
+
+function getBrowserPosition() {
+  return new Promise<GeolocationPosition>((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(new Error('Browser location is not available.'));
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(resolve, reject, {
+      enableHighAccuracy: true,
+      maximumAge: 60_000,
+      timeout: 12_000,
+    });
+  });
+}
+
+function isLikelyInSweden(lat: number, lon: number) {
+  return lat >= 55 && lat <= 69.5 && lon >= 10 && lon <= 25;
+}
+
+function normalizePlaceName(value: string) {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\b(kommun|municipality|city|county)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function placeNameCandidates(value: string) {
+  const normalized = normalizePlaceName(value);
+  return Array.from(new Set([normalized, normalized.replace(/s$/, '')].filter(Boolean)));
+}
+
+async function resolveMunicipality(lat: number, lon: number) {
+  const response = await fetch(
+    `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=10&addressdetails=1`,
+  );
+
+  if (!response.ok) {
+    throw new Error('Could not resolve your municipality.');
+  }
+
+  const result = (await response.json()) as {
+    address?: Record<string, string | undefined>;
+  };
+  const address = result.address ?? {};
+
+  return (
+    address.municipality ||
+    address.city ||
+    address.town ||
+    address.village ||
+    address.county ||
+    null
+  );
+}
+
+async function fetchProtectedAreasForMunicipality(municipality: string) {
+  const municipalityCandidates = placeNameCandidates(municipality);
+  const typeResponse = await fetch('https://geodata.naturvardsverket.se/naturvardsregistret/rest/v3/omrade/skyddstyper');
+
+  if (!typeResponse.ok) {
+    throw new Error('Could not load Naturvårdsverket protected area types.');
+  }
+
+  const areaTypes = (await typeResponse.json()) as Array<{ key?: string; value?: string }>;
+  const selectedTypes = areaTypes.filter((areaType) =>
+    /nationalpark|naturreservat|naturvardsomrade|vattenskydd/i.test(normalizePlaceName(areaType.value ?? '')),
+  );
+  const areaResponses = await Promise.all(
+    selectedTypes.map(async (areaType) => {
+      if (!areaType.key) {
+        return [];
+      }
+
+      const response = await fetch(
+        `https://geodata.naturvardsverket.se/naturvardsregistret/rest/v3/omrade?skyddstypkod=${encodeURIComponent(areaType.key)}`,
+      );
+
+      if (!response.ok) {
+        return [];
+      }
+
+      const records = (await response.json()) as Array<{
+        namn?: string;
+        skyddstyp?: string;
+        skyddstypAsText?: string;
+        kommunerAsText?: string;
+        areaHa?: number;
+      }>;
+
+      return records
+        .filter((record) => {
+          const recordMunicipality = normalizePlaceName(record.kommunerAsText ?? '');
+          return municipalityCandidates.some((candidate) => recordMunicipality.includes(candidate));
+        })
+        .map<ProtectedAreaHit>((record) => ({
+          name: record.namn || 'Unnamed protected area',
+          type: record.skyddstypAsText || record.skyddstyp || areaType.value || 'Protected area',
+          municipality: record.kommunerAsText || municipality,
+          areaHa: typeof record.areaHa === 'number' ? record.areaHa : null,
+        }));
+    }),
+  );
+
+  return areaResponses
+    .flat()
+    .sort((areaA, areaB) => (areaB.areaHa ?? 0) - (areaA.areaHa ?? 0))
+    .slice(0, 5);
+}
+
 export default function App() {
   const [eprtrDataset, setEprtrDataset] = useState<EprtrDataset | null>(null);
   const [dataError, setDataError] = useState<string | null>(null);
@@ -438,6 +640,9 @@ export default function App() {
   const [pollutionMetric, setPollutionMetric] = useState('');
   const [comparison, setComparison] = useState<ActiveComparison | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [nearbyStatus, setNearbyStatus] = useState<NearbyStatus>('idle');
+  const [nearbyError, setNearbyError] = useState('');
+  const [nearbyResult, setNearbyResult] = useState<NearbyResult | null>(null);
 
   useEffect(() => {
     let isActive = true;
@@ -542,6 +747,74 @@ export default function App() {
   const handleLogout = () => {
     window.localStorage.removeItem(accountStorageKey);
     setUserEmail(null);
+    setNearbyStatus('idle');
+    setNearbyError('');
+    setNearbyResult(null);
+  };
+
+  const handleExportPdf = () => {
+    window.print();
+  };
+
+  const handleNearMeCheck = async () => {
+    if (!eprtrDataset) {
+      return;
+    }
+
+    setNearbyStatus('loading');
+    setNearbyError('');
+
+    try {
+      const position = await getBrowserPosition();
+      const { latitude, longitude } = position.coords;
+      const factories = eprtrDataset.allFacilities
+        .map((facility) => ({
+          ...facility,
+          distanceKm: distanceKm(latitude, longitude, facility.lat, facility.lon),
+        }))
+        .filter((facility) => facility.distanceKm <= 50)
+        .sort((facilityA, facilityB) => facilityA.distanceKm - facilityB.distanceKm)
+        .slice(0, 6);
+
+      let municipality: string | null = null;
+      let protectedAreas: ProtectedAreaHit[] = [];
+      let protectedAreaNote = 'Naturvårdsverket lookup is available for locations in Sweden.';
+
+      if (isLikelyInSweden(latitude, longitude)) {
+        try {
+          municipality = await resolveMunicipality(latitude, longitude);
+
+          if (municipality) {
+            protectedAreas = await fetchProtectedAreasForMunicipality(municipality);
+            protectedAreaNote = protectedAreas.length
+              ? `Matched Naturvårdsverket protected-area records for ${municipality}.`
+              : `No Naturvårdsverket protected-area records matched ${municipality}.`;
+          } else {
+            protectedAreaNote = 'Could not resolve a Swedish municipality for this location.';
+          }
+        } catch (error) {
+          protectedAreaNote =
+            error instanceof Error
+              ? error.message
+              : 'Could not complete the Naturvårdsverket lookup right now.';
+        }
+      } else {
+        protectedAreaNote = 'Naturvårdsverket protected-area lookup is Sweden-only; your location appears outside Sweden.';
+      }
+
+      setNearbyResult({
+        lat: latitude,
+        lon: longitude,
+        factories,
+        protectedAreas,
+        municipality,
+        protectedAreaNote,
+      });
+      setNearbyStatus('ready');
+    } catch (error) {
+      setNearbyError(error instanceof Error ? error.message : 'Could not read your browser location.');
+      setNearbyStatus('error');
+    }
   };
 
   const reportInsights = useMemo(() => {
@@ -781,8 +1054,10 @@ export default function App() {
                   <FileText className="h-6 w-6" />
                 </div>
                 <div>
-                  <h3 className="text-xl font-black text-[#14212b]">Detailed Benchmark Report</h3>
-                  <p className="text-sm text-[#526371]">Optional account unlock for deeper analysis.</p>
+                  <h3 className="text-xl font-black text-[#14212b]">Want the full report?</h3>
+                  <p className="text-sm text-[#526371]">
+                    Create an account to unlock a benchmark report plus country-by-country detail for these two industries.
+                  </p>
                 </div>
               </div>
 
@@ -822,15 +1097,124 @@ export default function App() {
                   <div className="rounded-lg border border-[#d9e2e8] bg-[#f8fafb] p-5">
                     <p className="mb-4 text-sm font-bold text-[#14212b]">Account actions</p>
                     <div className="grid gap-3">
-                      <button className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#f3703d] px-4 py-3 text-sm font-bold text-white transition hover:bg-[#ff7a18]">
+                      <button
+                        type="button"
+                        onClick={handleExportPdf}
+                        className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#f3703d] px-4 py-3 text-sm font-bold text-white transition hover:bg-[#ff7a18]"
+                      >
                         <Download className="h-4 w-4" />
-                        Export report
+                        Save website as PDF
                       </button>
-                      <button className="inline-flex items-center justify-center gap-2 rounded-lg border border-[#14212b]/15 bg-white px-4 py-3 text-sm font-bold text-[#14212b] transition hover:border-[#14212b]/30">
-                        <Save className="h-4 w-4" />
-                        Save comparison
+                      <button
+                        type="button"
+                        onClick={handleNearMeCheck}
+                        disabled={nearbyStatus === 'loading' || !eprtrDataset}
+                        className="inline-flex items-center justify-center gap-2 rounded-lg border border-[#14212b]/15 bg-white px-4 py-3 text-sm font-bold text-[#14212b] transition hover:border-[#14212b]/30 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {nearbyStatus === 'loading' ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <MapPin className="h-4 w-4" />
+                        )}
+                        Check factory or protected-area around your room
                       </button>
                     </div>
+                  </div>
+
+                  <div className="rounded-lg border border-[#d9e2e8] bg-white p-5 lg:col-span-2">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                      <div className="max-w-2xl">
+                        <div className="mb-3 inline-flex items-center gap-2 rounded-lg bg-[#14212b] px-3 py-2 text-xs font-bold text-white">
+                          <LocateFixed className="h-4 w-4 text-[#ff7a18]" />
+                          VIP near-me check
+                        </div>
+                        <h4 className="text-xl font-black text-[#14212b]">Any factories or Naturvårdsverket areas near my room?</h4>
+                        <p className="mt-2 text-sm leading-6 text-[#526371]">
+                          Uses your browser location, raw E-PRTR facility coordinates, and Swedish protected-area records when your location is in Sweden.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleNearMeCheck}
+                        disabled={nearbyStatus === 'loading' || !eprtrDataset}
+                        className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#14212b] px-5 py-3 text-sm font-bold text-white transition hover:bg-[#203140] disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {nearbyStatus === 'loading' ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <MapPin className="h-4 w-4 text-[#ff7a18]" />
+                        )}
+                        {nearbyStatus === 'loading' ? 'Checking location' : 'Check around my room'}
+                      </button>
+                    </div>
+
+                    {nearbyStatus === 'error' && (
+                      <div className="mt-5 rounded-lg border border-[#f05a9d]/30 bg-[#fff0f7] p-4 text-sm font-medium text-[#9d2862]">
+                        {nearbyError}
+                      </div>
+                    )}
+
+                    {nearbyResult && (
+                      <div className="mt-5 grid gap-4 lg:grid-cols-2">
+                        <div className="rounded-lg border border-[#d9e2e8] bg-[#f8fafb] p-4">
+                          <div className="mb-3 flex items-center gap-2">
+                            <Factory className="h-5 w-5 text-[#25a9e0]" />
+                            <p className="text-sm font-black text-[#14212b]">Nearby E-PRTR factories</p>
+                          </div>
+                          <p className="mb-4 text-xs leading-5 text-[#526371]">
+                            Location: {nearbyResult.lat.toFixed(4)}, {nearbyResult.lon.toFixed(4)}. Showing raw CSV facilities within 50 km.
+                          </p>
+                          {nearbyResult.factories.length ? (
+                            <div className="space-y-3">
+                              {nearbyResult.factories.map((factory) => (
+                                <div key={`${factory.id}-${factory.lat}-${factory.lon}`} className="rounded-lg bg-white p-3">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                      <p className="text-sm font-black text-[#14212b]">{factory.name}</p>
+                                      <p className="mt-1 text-xs leading-5 text-[#526371]">
+                                        {factory.city}, {factory.country} · {factory.sectorName}
+                                      </p>
+                                    </div>
+                                    <span className="shrink-0 rounded-lg bg-[#eef9fd] px-2 py-1 text-xs font-black text-[#168fca]">
+                                      {factory.distanceKm.toFixed(1)} km
+                                    </span>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="rounded-lg bg-white p-3 text-sm text-[#526371]">
+                              No raw E-PRTR facility coordinates were found within 50 km.
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="rounded-lg border border-[#d9e2e8] bg-[#f8fafb] p-4">
+                          <div className="mb-3 flex items-center gap-2">
+                            <ShieldCheck className="h-5 w-5 text-[#f3703d]" />
+                            <p className="text-sm font-black text-[#14212b]">Naturvårdsverket signal</p>
+                          </div>
+                          <p className="mb-4 text-xs leading-5 text-[#526371]">{nearbyResult.protectedAreaNote}</p>
+                          {nearbyResult.protectedAreas.length ? (
+                            <div className="space-y-3">
+                              {nearbyResult.protectedAreas.map((area) => (
+                                <div key={`${area.name}-${area.type}-${area.municipality}`} className="rounded-lg bg-white p-3">
+                                  <p className="text-sm font-black text-[#14212b]">{area.name}</p>
+                                  <p className="mt-1 text-xs leading-5 text-[#526371]">
+                                    {area.type} · {area.municipality}
+                                    {area.areaHa !== null ? ` · ${Math.round(area.areaHa).toLocaleString()} ha` : ''}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="rounded-lg bg-white p-3 text-sm text-[#526371]">
+                              No protected-area matches are available for this browser location.
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
