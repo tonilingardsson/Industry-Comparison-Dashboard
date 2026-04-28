@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'motion/react';
-import { ArrowRight, Download, Factory, FileText, MapPin, Save, TrendingUp } from 'lucide-react';
+import { ArrowRight, ChevronDown, Download, Factory, FileText, MapPin, Save, TrendingUp } from 'lucide-react';
 import { AccountGate } from './components/AccountGate';
 import { IndustrySelector } from './components/IndustrySelector';
 import { ComparisonCard } from './components/ComparisonCard';
@@ -10,65 +10,473 @@ import { GeographicSpread } from './components/GeographicSpread';
 import brandLogo from '../assets/branding/icons-of-colorful.png';
 import brandPhoto from '../assets/branding/logo-with-image.jpg';
 
-// Mock data for industries
-const industries = [
-  'Manufacturing',
-  'Energy Production',
-  'Chemical Processing',
-  'Waste Management',
-  'Metal Production',
-  'Food Processing',
-  'Textile Industry',
-  'Pharmaceutical',
-];
+const eprtrRawFileUrls = import.meta.glob('../../Varberg-Hackathon/hackathon_data/eprtr_raw/*.csv', {
+  eager: true,
+  import: 'default',
+  query: '?url',
+}) as Record<string, string>;
 
 const accountStorageKey = 'industry-duel-user';
+const maxMappedLocations = 10;
+const categoryUnitLabel = 't/year';
 
-// Mock data generator
-function generateMockData(industry1: string, industry2: string) {
-  const emissionsData = Array.from({ length: 10 }, (_, i) => ({
-    year: 2016 + i,
-    industry1: Math.floor(Math.random() * 50000 + 20000),
-    industry2: Math.floor(Math.random() * 50000 + 20000),
+interface CsvRow {
+  [key: string]: string;
+}
+
+interface FacilityLocation {
+  country: string;
+  lat: number;
+  lon: number;
+}
+
+interface MetricData {
+  valuesByYear: Map<number, number>;
+  facilityIds: Set<string>;
+  locationCandidates: Array<FacilityLocation & { amount: number }>;
+}
+
+interface CategoryDataset {
+  id: string;
+  label: string;
+  description: string;
+  metricLabel: string;
+  valueLabel: string;
+  sourceFiles: string[];
+  metrics: string[];
+  sectors: Map<string, Map<string, MetricData>>;
+}
+
+interface EprtrDataset {
+  industries: string[];
+  categories: CategoryDataset[];
+  categoriesById: Map<string, CategoryDataset>;
+}
+
+function parseCsvRows(csvText: string): CsvRow[] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let inQuotes = false;
+
+  for (let index = 0; index < csvText.length; index += 1) {
+    const char = csvText[index];
+    const nextChar = csvText[index + 1];
+
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') {
+        field += '"';
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (char === ',' && !inQuotes) {
+      row.push(field);
+      field = '';
+      continue;
+    }
+
+    if ((char === '\n' || char === '\r') && !inQuotes) {
+      if (char === '\r' && nextChar === '\n') {
+        index += 1;
+      }
+      row.push(field);
+      if (row.some((value) => value.length > 0)) {
+        rows.push(row);
+      }
+      row = [];
+      field = '';
+      continue;
+    }
+
+    field += char;
+  }
+
+  if (field || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+
+  const [headerRow, ...dataRows] = rows;
+  if (!headerRow) {
+    return [];
+  }
+
+  const headers = headerRow.map((header) => header.replace(/^\uFEFF/, ''));
+  return dataRows.map((dataRow) =>
+    headers.reduce<CsvRow>((record, header, index) => {
+      record[header] = dataRow[index] ?? '';
+      return record;
+    }, {}),
+  );
+}
+
+function numericValue(value: string) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function createMetricData(): MetricData {
+  return {
+    valuesByYear: new Map(),
+    facilityIds: new Set(),
+    locationCandidates: [],
+  };
+}
+
+function createCategoryDataset(id: string, label: string, sourceFile: string, metricLabel: string): CategoryDataset {
+  return {
+    id,
+    label,
+    description: `${label} from ${sourceFile}`,
+    metricLabel,
+    valueLabel: `Reported ${label.toLowerCase()}`,
+    sourceFiles: [sourceFile],
+    metrics: [],
+    sectors: new Map(),
+  };
+}
+
+function getMetricData(category: CategoryDataset, sectorName: string, metricName: string) {
+  let sectorMetrics = category.sectors.get(sectorName);
+  if (!sectorMetrics) {
+    sectorMetrics = new Map();
+    category.sectors.set(sectorName, sectorMetrics);
+  }
+
+  let metricData = sectorMetrics.get(metricName);
+  if (!metricData) {
+    metricData = createMetricData();
+    sectorMetrics.set(metricName, metricData);
+  }
+
+  return metricData;
+}
+
+function addMetricName(category: CategoryDataset, metricName: string) {
+  if (metricName && !category.metrics.includes(metricName)) {
+    category.metrics.push(metricName);
+  }
+}
+
+function addAmountByYear(metricData: MetricData, reportingYear: string, rawAmount: string, convertKgToTonnes: boolean) {
+  const parsedYear = numericValue(reportingYear);
+  const parsedAmount = numericValue(rawAmount);
+  if (parsedYear === null || parsedAmount === null) {
+    return null;
+  }
+
+  const year = Math.trunc(parsedYear);
+  const amount = convertKgToTonnes ? parsedAmount / 1000 : parsedAmount;
+  const currentValue = metricData.valuesByYear.get(year) ?? 0;
+  metricData.valuesByYear.set(year, currentValue + amount);
+  return amount;
+}
+
+function addFacilityPoint(metricData: MetricData, row: CsvRow, amount: number) {
+  const latitude = numericValue(row.Latitude);
+  const longitude = numericValue(row.Longitude);
+  if (latitude === null || longitude === null) {
+    return;
+  }
+
+  const facilityId = row.FacilityInspireId || `${row.countryName}-${row.facilityName}-${row.city}`;
+  metricData.facilityIds.add(facilityId);
+  metricData.locationCandidates.push({
+    country: row.countryName,
+    lat: latitude,
+    lon: longitude,
+    amount,
+  });
+}
+
+function addIndustryNames(industryNames: Set<string>, csvText: string) {
+  parseCsvRows(csvText).forEach((row) => {
+    if (row.EPRTR_SectorName) {
+      industryNames.add(row.EPRTR_SectorName);
+    }
+  });
+}
+
+function filenameFromPath(path: string) {
+  return path.split('/').pop() ?? path;
+}
+
+function humanizeIdentifier(identifier: string) {
+  return identifier
+    .replace(/\.csv$/i, '')
+    .replace(/^F\d+_\d+_/, '')
+    .replace(/_(Sector|Facilities)$/i, '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+    .replace(/^\w/, (char) => char.toUpperCase());
+}
+
+function categoryKeyFromFilename(filename: string) {
+  return filename
+    .replace(/\.csv$/i, '')
+    .replace(/^F\d+_\d+_/, '')
+    .replace(/_(Sector|Facilities)$/i, '');
+}
+
+function valueColumnFromHeaders(headers: string[]) {
+  return headers.find((header) => ['Releases', 'transfers', 'wasteTransfers'].includes(header));
+}
+
+function metricNamesFromRow(row: CsvRow, headers: string[], valueColumn: string) {
+  if (row.Pollutant) {
+    return [row.Pollutant];
+  }
+
+  const valueLabel = humanizeIdentifier(valueColumn);
+  const metricNames = [valueLabel];
+  const metricDimensionColumns = headers.filter((header) => header.startsWith('waste') && header !== valueColumn);
+
+  metricDimensionColumns.forEach((column) => {
+    if (row[column]) {
+      metricNames.push(`${humanizeIdentifier(column)}: ${row[column]}`);
+    }
+  });
+
+  return metricNames;
+}
+
+function getCategory(categoriesById: Map<string, CategoryDataset>, filename: string, metricLabel: string) {
+  const id = categoryKeyFromFilename(filename);
+  const existingCategory = categoriesById.get(id);
+  if (existingCategory) {
+    if (!existingCategory.sourceFiles.includes(filename)) {
+      existingCategory.sourceFiles.push(filename);
+      existingCategory.description = `${existingCategory.label} from ${existingCategory.sourceFiles.join(', ')}`;
+    }
+    return existingCategory;
+  }
+
+  const category = createCategoryDataset(id, humanizeIdentifier(id), filename, metricLabel);
+  categoriesById.set(id, category);
+  return category;
+}
+
+function buildEprtrDataset(rawCsvByFilename: Record<string, string>): EprtrDataset {
+  const industryNames = new Set<string>();
+  const categoriesById = new Map<string, CategoryDataset>();
+  const parsedFiles = Object.entries(rawCsvByFilename).map(([filename, csvText]) => {
+    addIndustryNames(industryNames, csvText);
+    const rows = parseCsvRows(csvText);
+    const headers = rows[0] ? Object.keys(rows[0]) : [];
+    const valueColumn = valueColumnFromHeaders(headers);
+    const isSectorFile = filename.includes('_Sector');
+
+    return { filename, rows, headers, valueColumn, isSectorFile };
+  });
+
+  const categoriesWithSectorFiles = new Set(
+    parsedFiles
+      .filter((file) => file.isSectorFile)
+      .map((file) => categoryKeyFromFilename(file.filename)),
+  );
+
+  parsedFiles.forEach(({ filename, rows, headers, valueColumn, isSectorFile }) => {
+    if (!valueColumn) {
+      return;
+    }
+
+    const category = getCategory(categoriesById, filename, rows.some((row) => row.Pollutant) ? 'Pollutant' : humanizeIdentifier(valueColumn));
+    const includeTrendValues = isSectorFile || !categoriesWithSectorFiles.has(category.id);
+    const convertToTonnes = !valueColumn.toLowerCase().includes('waste');
+
+    rows.forEach((row) => {
+      const sectorName = row.EPRTR_SectorName;
+      if (!sectorName) {
+        return;
+      }
+
+      metricNamesFromRow(row, headers, valueColumn).forEach((metricName) => {
+        addMetricName(category, metricName);
+        const metricData = getMetricData(category, sectorName, metricName);
+        const parsedAmount = numericValue(row[valueColumn]);
+        const amount = parsedAmount === null ? 0 : convertToTonnes ? parsedAmount / 1000 : parsedAmount;
+
+        if (includeTrendValues) {
+          addAmountByYear(metricData, row.reportingYear, row[valueColumn], convertToTonnes);
+        }
+
+        if (!isSectorFile) {
+          addFacilityPoint(metricData, row, amount);
+        }
+      });
+    });
+  });
+
+  const categories = Array.from(categoriesById.values())
+    .map((category) => ({
+      ...category,
+      metrics: category.metrics
+        .filter((metricName) =>
+          Array.from(category.sectors.values()).some((sectorMetrics) => {
+            const metricData = sectorMetrics.get(metricName);
+            return metricData ? metricData.valuesByYear.size > 0 : false;
+          }),
+        )
+        .sort((metricA, metricB) => metricA.localeCompare(metricB)),
+    }))
+    .sort((categoryA, categoryB) => categoryA.label.localeCompare(categoryB.label));
+
+  const sortedCategoriesById = new Map(categories.map((category) => [category.id, category]));
+  const industries = Array.from(industryNames).sort((industryA, industryB) => industryA.localeCompare(industryB));
+
+  return { industries, categories, categoriesById: sortedCategoriesById };
+}
+
+function getCategoryYears(category: CategoryDataset, metricName: string) {
+  return Array.from(
+    new Set(
+      Array.from(category.sectors.values()).flatMap((sectorMetrics) => {
+        const metricData = sectorMetrics.get(metricName);
+        return metricData ? Array.from(metricData.valuesByYear.keys()) : [];
+      }),
+    ),
+  )
+    .sort((a, b) => a - b)
+    .slice(-10);
+}
+
+// E-PRTR-backed comparison generator using the selected raw file category and metric.
+function generateComparisonData(
+  industry1: string,
+  industry2: string,
+  categoryId: string,
+  metricName: string,
+  dataset: EprtrDataset,
+) {
+  const category = dataset.categoriesById.get(categoryId);
+  if (!category) {
+    throw new Error(`Unknown E-PRTR category: ${categoryId}`);
+  }
+
+  const firstMetric = category.sectors.get(industry1)?.get(metricName);
+  const secondMetric = category.sectors.get(industry2)?.get(metricName);
+  const years = getCategoryYears(category, metricName);
+
+  const getLocations = (metricData?: MetricData) => {
+    if (!metricData) {
+      return [];
+    }
+
+    const seenLocations = new Set<string>();
+    return [...metricData.locationCandidates]
+      .sort((a, b) => b.amount - a.amount)
+      .filter((location) => {
+        const locationKey = `${location.country}-${location.lat}-${location.lon}`;
+        if (seenLocations.has(locationKey)) {
+          return false;
+        }
+        seenLocations.add(locationKey);
+        return true;
+      })
+      .slice(0, maxMappedLocations)
+      .map(({ country, lat, lon }) => ({ country, lat, lon }));
+  };
+
+  const emissionsData = years.map((year) => ({
+    year,
+    industry1: Math.round(firstMetric?.valuesByYear.get(year) ?? 0),
+    industry2: Math.round(secondMetric?.valuesByYear.get(year) ?? 0),
   }));
 
   const facilities = {
-    count1: Math.floor(Math.random() * 500 + 100),
-    count2: Math.floor(Math.random() * 500 + 100),
+    count1: firstMetric?.facilityIds.size ?? 0,
+    count2: secondMetric?.facilityIds.size ?? 0,
   };
 
-  const locations1 = Array.from({ length: 8 }, () => ({
-    country: ['Germany', 'France', 'Poland', 'Spain', 'Italy'][Math.floor(Math.random() * 5)],
-    lat: Math.random() * 20 + 45,
-    lon: Math.random() * 30 - 5,
-  }));
+  const locations1 = getLocations(firstMetric);
+  const locations2 = getLocations(secondMetric);
 
-  const locations2 = Array.from({ length: 8 }, () => ({
-    country: ['Germany', 'France', 'Poland', 'Spain', 'Italy'][Math.floor(Math.random() * 5)],
-    lat: Math.random() * 20 + 45,
-    lon: Math.random() * 30 - 5,
-  }));
-
-  return { emissionsData, facilities, locations1, locations2 };
+  return {
+    emissionsData,
+    facilities,
+    locations1,
+    locations2,
+    categoryId,
+    categoryLabel: category.label,
+    metricName,
+    unitLabel: categoryUnitLabel,
+    valueLabel: category.valueLabel,
+  };
 }
 
-type ComparisonData = ReturnType<typeof generateMockData>;
+type ComparisonData = ReturnType<typeof generateComparisonData>;
 
 interface ActiveComparison {
   industry1: string;
   industry2: string;
+  categoryId: string;
+  metricName: string;
   data: ComparisonData;
 }
 
 function averageEmissions(data: ComparisonData['emissionsData'], key: 'industry1' | 'industry2') {
+  if (!data.length) {
+    return 0;
+  }
+
   return data.reduce((sum, item) => sum + item[key], 0) / data.length;
 }
 
 export default function App() {
+  const [eprtrDataset, setEprtrDataset] = useState<EprtrDataset | null>(null);
+  const [dataError, setDataError] = useState<string | null>(null);
   const [industry1, setIndustry1] = useState('');
   const [industry2, setIndustry2] = useState('');
+  const [pollutionCategory, setPollutionCategory] = useState('');
+  const [pollutionMetric, setPollutionMetric] = useState('');
   const [comparison, setComparison] = useState<ActiveComparison | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isActive = true;
+
+    async function loadEprtrDataset() {
+      try {
+        const fileEntries = Object.entries(eprtrRawFileUrls)
+          .map(([path, url]) => ({ filename: filenameFromPath(path), url }))
+          .sort((fileA, fileB) => fileA.filename.localeCompare(fileB.filename));
+
+        const responses = await Promise.all(fileEntries.map((file) => fetch(file.url)));
+
+        if (responses.some((response) => !response.ok)) {
+          throw new Error('Could not load E-PRTR CSV assets.');
+        }
+
+        const csvTexts = await Promise.all(responses.map((response) => response.text()));
+        const rawCsvByFilename = fileEntries.reduce<Record<string, string>>((files, file, index) => {
+          files[file.filename] = csvTexts[index];
+          return files;
+        }, {});
+
+        if (isActive) {
+          setEprtrDataset(buildEprtrDataset(rawCsvByFilename));
+          setDataError(null);
+        }
+      } catch (error) {
+        if (isActive) {
+          setDataError(error instanceof Error ? error.message : 'Could not load E-PRTR data.');
+        }
+      }
+    }
+
+    loadEprtrDataset();
+
+    return () => {
+      isActive = false;
+    };
+  }, []);
 
   useEffect(() => {
     const storedUser = window.localStorage.getItem(accountStorageKey);
@@ -87,12 +495,41 @@ export default function App() {
     }
   }, []);
 
+  const industries = eprtrDataset?.industries ?? [];
+  const categoryOptions = eprtrDataset?.categories ?? [];
+  const selectedCategory = eprtrDataset?.categoriesById.get(pollutionCategory);
+  const metricOptions = selectedCategory?.metrics ?? [];
+
+  useEffect(() => {
+    if (!categoryOptions.length) {
+      setPollutionCategory('');
+      return;
+    }
+
+    if (!categoryOptions.some((category) => category.id === pollutionCategory)) {
+      setPollutionCategory(categoryOptions[0].id);
+    }
+  }, [categoryOptions, pollutionCategory]);
+
+  useEffect(() => {
+    if (!metricOptions.length) {
+      setPollutionMetric('');
+      return;
+    }
+
+    if (!metricOptions.includes(pollutionMetric)) {
+      setPollutionMetric(metricOptions[0]);
+    }
+  }, [metricOptions, pollutionMetric]);
+
   const handleCompare = () => {
-    if (industry1 && industry2 && industry1 !== industry2) {
+    if (eprtrDataset && industry1 && industry2 && industry1 !== industry2 && pollutionMetric) {
       setComparison({
         industry1,
         industry2,
-        data: generateMockData(industry1, industry2),
+        categoryId: pollutionCategory,
+        metricName: pollutionMetric,
+        data: generateComparisonData(industry1, industry2, pollutionCategory, pollutionMetric, eprtrDataset),
       });
     }
   };
@@ -151,7 +588,7 @@ export default function App() {
             <img src={brandLogo} alt="Icons Of" className="h-9 w-auto max-w-[180px] object-contain" />
           </div>
           <div className="hidden rounded-lg border border-white/15 bg-white/10 px-4 py-2 text-sm font-medium text-white/80 backdrop-blur sm:block">
-            Nordic open data prototype
+            European open data prototype
           </div>
         </header>
 
@@ -169,7 +606,7 @@ export default function App() {
             Industry Duel
           </h1>
           <p className="max-w-2xl text-lg leading-8 text-white/72">
-            Compare emission trends, facilities, and geographic spread with an Icons Of inspired interface built around bold color, clear contrast, and open data.
+            Compare European E-PRTR emission trends, facilities, and geographic spread with an Icons Of inspired interface built around bold color, clear contrast, and open data.
           </p>
         </motion.div>
 
@@ -181,6 +618,11 @@ export default function App() {
           className="mx-auto max-w-5xl"
         >
           <div className="mb-8 rounded-lg border border-white/20 bg-white p-5 shadow-2xl shadow-black/25 sm:p-8">
+            {(dataError || !eprtrDataset) && (
+              <div className="mb-5 rounded-lg border border-[#d9e2e8] bg-[#f8fafb] px-4 py-3 text-sm text-[#526371]">
+                {dataError ?? 'Loading raw E-PRTR industry, sector, and facility data...'}
+              </div>
+            )}
             <div className="mb-8 grid gap-6 md:grid-cols-2">
               <IndustrySelector
                 label="First Industry"
@@ -196,13 +638,41 @@ export default function App() {
                 industries={industries}
                 color="border-[#f05a9d]/30 focus:border-[#f05a9d] focus:ring-[#f05a9d]"
               />
+              <div className="flex flex-col gap-3">
+                <label className="text-sm font-bold text-[#14212b]">Pollution Category</label>
+                <div className="relative">
+                  <select
+                    value={pollutionCategory}
+                    onChange={(event) => setPollutionCategory(event.target.value)}
+                    className="w-full cursor-pointer appearance-none rounded-lg border-2 border-[#f3703d]/30 bg-[#f8fafb] px-5 py-4 pr-12 text-[#14212b] transition-all hover:bg-white hover:shadow-md focus:border-[#f3703d] focus:bg-white focus:outline-none focus:ring-4 focus:ring-[#f3703d] focus:ring-opacity-20"
+                  >
+                    {categoryOptions.map((category) => (
+                      <option key={category.id} value={category.id}>
+                        {category.label}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-4 top-1/2 h-5 w-5 -translate-y-1/2 text-[#526371]" />
+                </div>
+                <p className="text-xs leading-5 text-[#526371]">
+                  {selectedCategory?.description}
+                </p>
+              </div>
+              <IndustrySelector
+                label={selectedCategory?.metricLabel ?? 'Metric'}
+                value={pollutionMetric}
+                onChange={setPollutionMetric}
+                industries={metricOptions}
+                color="border-[#14212b]/20 focus:border-[#14212b] focus:ring-[#14212b]"
+                placeholder="Select metric..."
+              />
             </div>
             <button
               onClick={handleCompare}
-              disabled={!industry1 || !industry2 || industry1 === industry2}
+              disabled={!eprtrDataset || !industry1 || !industry2 || industry1 === industry2 || !pollutionMetric}
               className="flex w-full items-center justify-center gap-2 rounded-lg bg-[#f3703d] px-6 py-4 font-bold text-white shadow-lg shadow-[#f3703d]/25 transition-all hover:bg-[#ff7a18] hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-45"
             >
-              Compare Industries
+              {eprtrDataset ? 'Compare Industries' : 'Loading data'}
               <ArrowRight className="h-5 w-5" />
             </button>
           </div>
@@ -213,29 +683,32 @@ export default function App() {
           <div className="max-w-7xl mx-auto space-y-8">
             {/* Emissions Trends */}
             <ComparisonCard
-              title="Emission Trends (2016-2025)"
+              title={`${comparison.data.metricName} ${comparison.data.categoryLabel} Trends`}
               icon={<TrendingUp className="w-6 h-6" />}
               delay={0.3}
               shareId="emission-trends"
-              shareText={`I compared emission trends for ${comparison.industry1} and ${comparison.industry2} in Industry Duel, an Icons Of open data dashboard for exploring industrial impact across Europe.`}
+              shareText={`I compared ${comparison.data.metricName} ${comparison.data.categoryLabel.toLowerCase()} for ${comparison.industry1} and ${comparison.industry2} in Industry Duel, an Icons Of open data dashboard for exploring industrial impact across Europe.`}
             >
               <EmissionsChart
                 industry1={comparison.industry1}
                 industry2={comparison.industry2}
                 data={comparison.data.emissionsData}
+                yAxisLabel={comparison.data.unitLabel}
+                tooltipLabel={comparison.data.valueLabel}
+                unitLabel={comparison.data.unitLabel}
               />
               <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="border-l-4 border-[#25a9e0] bg-[#eef9fd] p-4">
-                  <p className="mb-1 text-sm text-[#526371]">Average annual emissions</p>
+                  <p className="mb-1 text-sm text-[#526371]">Average annual amount</p>
                   <p className="text-2xl font-black text-[#168fca]">
-                    {averageEmissions(comparison.data.emissionsData, 'industry1').toFixed(0).toLocaleString()} t
+                    {Math.round(averageEmissions(comparison.data.emissionsData, 'industry1')).toLocaleString()} {comparison.data.unitLabel}
                   </p>
                   <p className="mt-1 text-xs text-[#526371]">{comparison.industry1}</p>
                 </div>
                 <div className="border-l-4 border-[#f05a9d] bg-[#fff0f7] p-4">
-                  <p className="mb-1 text-sm text-[#526371]">Average annual emissions</p>
+                  <p className="mb-1 text-sm text-[#526371]">Average annual amount</p>
                   <p className="text-2xl font-black text-[#d83d87]">
-                    {averageEmissions(comparison.data.emissionsData, 'industry2').toFixed(0).toLocaleString()} t
+                    {Math.round(averageEmissions(comparison.data.emissionsData, 'industry2')).toLocaleString()} {comparison.data.unitLabel}
                   </p>
                   <p className="mt-1 text-xs text-[#526371]">{comparison.industry2}</p>
                 </div>
@@ -244,7 +717,7 @@ export default function App() {
 
             {/* Number of Facilities */}
             <ComparisonCard
-              title="Number of Facilities"
+              title={`${comparison.data.categoryLabel} Reporting Facilities`}
               icon={<Factory className="w-6 h-6" />}
               delay={0.4}
               shareId="facility-counts"
@@ -271,7 +744,7 @@ export default function App() {
 
             {/* Geographic Spread */}
             <ComparisonCard
-              title="Geographic Distribution"
+              title={`${comparison.data.categoryLabel} Geographic Distribution`}
               icon={<MapPin className="w-6 h-6" />}
               delay={0.5}
               shareId="geographic-distribution"
@@ -285,13 +758,13 @@ export default function App() {
               />
               <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="border-l-4 border-[#25a9e0] bg-[#eef9fd] p-4 text-center">
-                  <p className="mb-1 text-sm text-[#526371]">Facilities across Europe</p>
-                  <p className="text-2xl font-black text-[#168fca]">{comparison.data.locations1.length} countries</p>
+                  <p className="mb-1 text-sm text-[#526371]">Mapped E-PRTR facilities</p>
+                  <p className="text-2xl font-black text-[#168fca]">{comparison.data.locations1.length} sites</p>
                   <p className="mt-1 text-xs text-[#526371]">{comparison.industry1}</p>
                 </div>
                 <div className="border-l-4 border-[#f05a9d] bg-[#fff0f7] p-4 text-center">
-                  <p className="mb-1 text-sm text-[#526371]">Facilities across Europe</p>
-                  <p className="text-2xl font-black text-[#d83d87]">{comparison.data.locations2.length} countries</p>
+                  <p className="mb-1 text-sm text-[#526371]">Mapped E-PRTR facilities</p>
+                  <p className="text-2xl font-black text-[#d83d87]">{comparison.data.locations2.length} sites</p>
                   <p className="mt-1 text-xs text-[#526371]">{comparison.industry2}</p>
                 </div>
               </div>
@@ -321,9 +794,9 @@ export default function App() {
                     <p className="mb-4 text-sm font-bold text-[#14212b]">Unlocked insights</p>
                     <div className="grid gap-4 sm:grid-cols-3">
                       <div>
-                        <p className="text-xs uppercase text-[#526371]">Emission gap</p>
+                        <p className="text-xs uppercase text-[#526371]">Average amount gap</p>
                         <p className="mt-1 text-2xl font-black text-[#14212b]">
-                          {reportInsights.emissionsGap.toFixed(0).toLocaleString()} t
+                          {Math.round(reportInsights.emissionsGap).toLocaleString()} {comparison.data.unitLabel}
                         </p>
                         <p className="mt-1 text-xs leading-5 text-[#526371]">
                           {reportInsights.higherEmissionIndustry} averages higher than {reportInsights.lowerEmissionIndustry}.
@@ -340,7 +813,7 @@ export default function App() {
                         <p className="text-xs uppercase text-[#526371]">Priority next step</p>
                         <p className="mt-1 text-base font-black text-[#14212b]">Regional review</p>
                         <p className="mt-1 text-xs leading-5 text-[#526371]">
-                          Compare top emitting countries before setting reduction targets.
+                          Compare top reporting countries before setting reduction targets.
                         </p>
                       </div>
                     </div>
@@ -372,8 +845,8 @@ export default function App() {
           transition={{ duration: 0.6, delay: 0.8 }}
           className="mt-16 text-center text-sm text-white/56"
         >
-          <p>Data sources: E-PRTR (F1_2, F1_4), SCB REST API, OECD</p>
-          <p className="mt-1">Mock data used for demonstration purposes</p>
+          <p>Data source: raw E-PRTR files from Varberg-Hackathon/hackathon_data/eprtr_raw/</p>
+          <p className="mt-1">Industry names are extracted from all raw files; comparison metrics cover air, water, off-site transfers, and waste transfers.</p>
         </motion.div>
       </div>
     </div>

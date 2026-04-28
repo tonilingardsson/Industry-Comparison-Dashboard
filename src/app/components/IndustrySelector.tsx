@@ -6,9 +6,10 @@ interface IndustrySelectorProps {
   onChange: (value: string) => void;
   industries: string[];
   color: string;
+  placeholder?: string;
 }
 
-export function IndustrySelector({ label, value, onChange, industries, color }: IndustrySelectorProps) {
+export function IndustrySelector({ label, value, onChange, industries, color, placeholder = 'Select industry...' }: IndustrySelectorProps) {
   return (
     <div className="flex flex-col gap-3">
       <label className="text-sm font-bold text-[#14212b]">{label}</label>
@@ -18,7 +19,7 @@ export function IndustrySelector({ label, value, onChange, industries, color }: 
           onChange={(e) => onChange(e.target.value)}
           className={`w-full cursor-pointer appearance-none rounded-lg border-2 bg-[#f8fafb] px-5 py-4 pr-12 text-[#14212b] transition-all hover:bg-white hover:shadow-md focus:bg-white focus:outline-none focus:ring-4 focus:ring-opacity-20 ${color}`}
         >
-          <option value="">Select industry...</option>
+          <option value="">{placeholder}</option>
           {industries.map((industry) => (
             <option key={industry} value={industry}>
               {industry}

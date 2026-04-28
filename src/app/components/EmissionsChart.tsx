@@ -4,12 +4,31 @@ interface EmissionsChartProps {
   industry1: string;
   industry2: string;
   data: Array<{ year: number; industry1: number; industry2: number }>;
+  yAxisLabel: string;
+  tooltipLabel: string;
+  unitLabel: string;
 }
 
-export function EmissionsChart({ industry1, industry2, data }: EmissionsChartProps) {
+function formatTonnes(value: number) {
+  if (Math.abs(value) >= 1_000_000_000) {
+    return `${Number((value / 1_000_000_000).toFixed(1)).toLocaleString()}B`;
+  }
+
+  if (Math.abs(value) >= 1_000_000) {
+    return `${Number((value / 1_000_000).toFixed(1)).toLocaleString()}M`;
+  }
+
+  if (Math.abs(value) >= 1_000) {
+    return `${Number((value / 1_000).toFixed(1)).toLocaleString()}k`;
+  }
+
+  return value.toLocaleString();
+}
+
+export function EmissionsChart({ industry1, industry2, data, yAxisLabel, tooltipLabel, unitLabel }: EmissionsChartProps) {
   return (
     <ResponsiveContainer width="100%" height={300}>
-      <LineChart data={data}>
+      <LineChart data={data} margin={{ top: 12, right: 24, bottom: 8, left: 18 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#d9e2e8" />
         <XAxis
           dataKey="year"
@@ -19,7 +38,9 @@ export function EmissionsChart({ industry1, industry2, data }: EmissionsChartPro
         <YAxis
           stroke="#526371"
           style={{ fontSize: '12px' }}
-          label={{ value: 'Emissions (tonnes CO2)', angle: -90, position: 'insideLeft', fill: '#526371' }}
+          tickFormatter={formatTonnes}
+          width={64}
+          label={{ value: yAxisLabel, angle: -90, position: 'insideLeft', offset: -8, fill: '#526371' }}
         />
         <Tooltip
           contentStyle={{
@@ -28,6 +49,7 @@ export function EmissionsChart({ industry1, industry2, data }: EmissionsChartPro
             borderRadius: '8px',
             boxShadow: '0 16px 32px -20px rgba(20, 33, 43, 0.45)'
           }}
+          formatter={(value: number) => [`${Math.round(value).toLocaleString()} ${unitLabel}`, tooltipLabel]}
         />
         <Legend />
         <Line

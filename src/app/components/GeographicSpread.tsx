@@ -22,7 +22,7 @@ export function GeographicSpread({ industry1, industry2, locations1, locations2 
             name="Longitude"
             stroke="#526371"
             style={{ fontSize: '12px' }}
-            domain={[-15, 35]}
+            domain={[-25, 35]}
           />
           <YAxis
             type="number"
@@ -30,7 +30,7 @@ export function GeographicSpread({ industry1, industry2, locations1, locations2 
             name="Latitude"
             stroke="#526371"
             style={{ fontSize: '12px' }}
-            domain={[35, 70]}
+            domain={[34, 72]}
           />
           <Tooltip
             cursor={{ strokeDasharray: '3 3' }}
