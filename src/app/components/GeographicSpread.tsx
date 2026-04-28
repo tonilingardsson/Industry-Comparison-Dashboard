@@ -15,12 +15,12 @@ export function GeographicSpread({ industry1, industry2, locations1, locations2 
     <div className="space-y-4">
       <ResponsiveContainer width="100%" height={300}>
         <ScatterChart>
-          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+          <CartesianGrid strokeDasharray="3 3" stroke="#d9e2e8" />
           <XAxis
             type="number"
             dataKey="lon"
             name="Longitude"
-            stroke="#6b7280"
+            stroke="#526371"
             style={{ fontSize: '12px' }}
             domain={[-15, 35]}
           />
@@ -28,7 +28,7 @@ export function GeographicSpread({ industry1, industry2, locations1, locations2 
             type="number"
             dataKey="lat"
             name="Latitude"
-            stroke="#6b7280"
+            stroke="#526371"
             style={{ fontSize: '12px' }}
             domain={[35, 70]}
           />
@@ -36,9 +36,9 @@ export function GeographicSpread({ industry1, industry2, locations1, locations2 
             cursor={{ strokeDasharray: '3 3' }}
             contentStyle={{
               backgroundColor: 'white',
-              border: '1px solid #e5e7eb',
-              borderRadius: '12px',
-              boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
+              border: '1px solid #d9e2e8',
+              borderRadius: '8px',
+              boxShadow: '0 16px 32px -20px rgba(20, 33, 43, 0.45)'
             }}
             formatter={(value: any, name: string, props: any) => {
               if (name === 'lat') return [`${value}°`, 'Latitude'];
@@ -52,26 +52,26 @@ export function GeographicSpread({ industry1, industry2, locations1, locations2 
               return '';
             }}
           />
-          <Scatter name={industry1} data={data1} fill="#3b82f6">
+          <Scatter name={industry1} data={data1} fill="#25a9e0">
             {data1.map((entry, index) => (
-              <Cell key={`cell-1-${index}`} fill="#3b82f6" opacity={0.6} />
+              <Cell key={`cell-1-${index}`} fill="#25a9e0" opacity={0.7} />
             ))}
           </Scatter>
-          <Scatter name={industry2} data={data2} fill="#8b5cf6">
+          <Scatter name={industry2} data={data2} fill="#f05a9d">
             {data2.map((entry, index) => (
-              <Cell key={`cell-2-${index}`} fill="#8b5cf6" opacity={0.6} />
+              <Cell key={`cell-2-${index}`} fill="#f05a9d" opacity={0.7} />
             ))}
           </Scatter>
         </ScatterChart>
       </ResponsiveContainer>
       <div className="flex gap-6 justify-center">
         <div className="flex items-center gap-2">
-          <div className="w-4 h-4 rounded-full bg-blue-500"></div>
-          <span className="text-sm text-gray-600">{industry1}</span>
+          <div className="h-4 w-4 rounded-full bg-[#25a9e0]"></div>
+          <span className="text-sm text-[#526371]">{industry1}</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="w-4 h-4 rounded-full bg-purple-600"></div>
-          <span className="text-sm text-gray-600">{industry2}</span>
+          <div className="h-4 w-4 rounded-full bg-[#f05a9d]"></div>
+          <span className="text-sm text-[#526371]">{industry2}</span>
         </div>
       </div>
     </div>
