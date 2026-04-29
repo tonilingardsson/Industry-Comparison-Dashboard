@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   ArrowRight,
+  ArrowLeft,
   ChevronDown,
   Download,
   Factory,
@@ -18,8 +19,9 @@ import { ComparisonCard } from './components/ComparisonCard';
 import { EmissionsChart } from './components/EmissionsChart';
 import { FacilitiesComparison } from './components/FacilitiesComparison';
 import { GeographicSpread } from './components/GeographicSpread';
-import brandLogo from '../assets/branding/icons-of-colorful.png';
 import brandPhoto from '../assets/branding/logo-with-image.jpg';
+import brandLogo from '../../Varberg-Hackathon/branding/Icons Of colorful.png';
+import protectedAreasUrl from '../../Varberg-Hackathon/hackathon_data/halland_skyddade_omraden.geojson?url';
 
 const eprtrRawFileUrls = import.meta.glob('../../Varberg-Hackathon/hackathon_data/eprtr_raw/*.csv', {
   eager: true,
@@ -52,7 +54,9 @@ interface FacilitySummary extends FacilityLocation {
 interface MetricData {
   valuesByYear: Map<number, number>;
   facilityIds: Set<string>;
-  locationCandidates: Array<FacilityLocation & { amount: number }>;
+  locationCandidates: Array<FacilityLocation & { amount: number; facilityId: string }>;
+  countryValuesByYear: Map<string, Map<number, number>>;
+  countryFacilityIds: Map<string, Set<string>>;
 }
 
 interface CategoryDataset {
@@ -78,10 +82,10 @@ interface NearbyFactory extends FacilitySummary {
 }
 
 interface ProtectedAreaHit {
+  id: string;
   name: string;
   type: string;
-  municipality: string;
-  areaHa: number | null;
+  distanceKm: number;
 }
 
 interface NearbyResult {
@@ -89,11 +93,48 @@ interface NearbyResult {
   lon: number;
   factories: NearbyFactory[];
   protectedAreas: ProtectedAreaHit[];
-  municipality: string | null;
   protectedAreaNote: string;
 }
 
 type NearbyStatus = 'idle' | 'loading' | 'ready' | 'error';
+
+interface CountryFootprint {
+  country: string;
+  amount: number;
+  facilities: number;
+}
+
+interface CountryComparisonData {
+  data: Array<{ year: number; industry1: number; industry2: number }>;
+  country1Total: number;
+  country2Total: number;
+  country1Facilities: number;
+  country2Facilities: number;
+}
+
+type GeoJsonPosition = [number, number];
+type GeoJsonRing = GeoJsonPosition[];
+type GeoJsonPolygon = GeoJsonRing[];
+type GeoJsonGeometry =
+  | { type: 'Point'; coordinates: GeoJsonPosition }
+  | { type: 'MultiPoint'; coordinates: GeoJsonPosition[] }
+  | { type: 'Polygon'; coordinates: GeoJsonPolygon }
+  | { type: 'MultiPolygon'; coordinates: GeoJsonPolygon[] };
+
+interface ProtectedAreaFeature {
+  type: 'Feature';
+  properties: {
+    NVRID?: string;
+    NAMN?: string;
+    skyddstyp?: string;
+  };
+  geometry: GeoJsonGeometry | null;
+}
+
+interface ProtectedAreaFeatureCollection {
+  type: 'FeatureCollection';
+  features: ProtectedAreaFeature[];
+}
 
 function parseCsvRows(csvText: string): CsvRow[] {
   const rows: string[][] = [];
@@ -166,6 +207,8 @@ function createMetricData(): MetricData {
     valuesByYear: new Map(),
     facilityIds: new Set(),
     locationCandidates: [],
+    countryValuesByYear: new Map(),
+    countryFacilityIds: new Map(),
   };
 }
 
@@ -228,11 +271,31 @@ function addFacilityPoint(metricData: MetricData, row: CsvRow, amount: number) {
   const facilityId = row.FacilityInspireId || `${row.countryName}-${row.facilityName}-${row.city}`;
   metricData.facilityIds.add(facilityId);
   metricData.locationCandidates.push({
-    country: row.countryName,
+    country: row.countryName || 'Unknown country',
     lat: latitude,
     lon: longitude,
     amount,
+    facilityId,
   });
+}
+
+function addCountryAmount(metricData: MetricData, row: CsvRow, amount: number) {
+  const parsedYear = numericValue(row.reportingYear);
+  const country = row.countryName || 'Unknown country';
+
+  if (parsedYear === null) {
+    return;
+  }
+
+  const year = Math.trunc(parsedYear);
+  const countryValues = metricData.countryValuesByYear.get(country) ?? new Map<number, number>();
+  countryValues.set(year, (countryValues.get(year) ?? 0) + amount);
+  metricData.countryValuesByYear.set(country, countryValues);
+
+  const facilityId = row.FacilityInspireId || `${row.countryName}-${row.facilityName}-${row.city}`;
+  const facilityIds = metricData.countryFacilityIds.get(country) ?? new Set<string>();
+  facilityIds.add(facilityId);
+  metricData.countryFacilityIds.set(country, facilityIds);
 }
 
 function addFacilitySummary(facilities: Map<string, FacilitySummary>, row: CsvRow, sourceFile: string) {
@@ -380,6 +443,7 @@ function buildEprtrDataset(rawCsvByFilename: Record<string, string>): EprtrDatas
 
         if (!isSectorFile) {
           addFacilityPoint(metricData, row, amount);
+          addCountryAmount(metricData, row, amount);
           addFacilitySummary(facilitySummaries, row, filename);
         }
       });
@@ -459,6 +523,31 @@ function generateComparisonData(
       .map(({ country, lat, lon }) => ({ country, lat, lon }));
   };
 
+  const getCountryBreakdown = (metricData?: MetricData): CountryFootprint[] => {
+    if (!metricData) {
+      return [];
+    }
+
+    const countries = new Map<string, { amount: number; facilityIds: Set<string> }>();
+
+    metricData.locationCandidates.forEach((location) => {
+      const country = location.country || 'Unknown country';
+      const countryData = countries.get(country) ?? { amount: 0, facilityIds: new Set<string>() };
+      countryData.amount += location.amount;
+      countryData.facilityIds.add(location.facilityId);
+      countries.set(country, countryData);
+    });
+
+    return Array.from(countries.entries())
+      .map(([country, countryData]) => ({
+        country,
+        amount: countryData.amount,
+        facilities: countryData.facilityIds.size,
+      }))
+      .sort((countryA, countryB) => countryB.amount - countryA.amount)
+      .slice(0, 6);
+  };
+
   const emissionsData = years.map((year) => ({
     year,
     industry1: Math.round(firstMetric?.valuesByYear.get(year) ?? 0),
@@ -472,12 +561,16 @@ function generateComparisonData(
 
   const locations1 = getLocations(firstMetric);
   const locations2 = getLocations(secondMetric);
+  const countryBreakdown1 = getCountryBreakdown(firstMetric);
+  const countryBreakdown2 = getCountryBreakdown(secondMetric);
 
   return {
     emissionsData,
     facilities,
     locations1,
     locations2,
+    countryBreakdown1,
+    countryBreakdown2,
     categoryId,
     categoryLabel: category.label,
     metricName,
@@ -502,6 +595,59 @@ function averageEmissions(data: ComparisonData['emissionsData'], key: 'industry1
   }
 
   return data.reduce((sum, item) => sum + item[key], 0) / data.length;
+}
+
+function getCountryMetricData(dataset: EprtrDataset | null, industry: string, categoryId: string, metricName: string) {
+  if (!dataset || !industry || !categoryId || !metricName) {
+    return undefined;
+  }
+
+  return dataset.categoriesById.get(categoryId)?.sectors.get(industry)?.get(metricName);
+}
+
+function getCountryOptions(dataset: EprtrDataset | null, industry: string, categoryId: string, metricName: string) {
+  const metricData = getCountryMetricData(dataset, industry, categoryId, metricName);
+
+  if (!metricData) {
+    return [];
+  }
+
+  return Array.from(metricData.countryValuesByYear.keys()).sort((countryA, countryB) =>
+    countryA.localeCompare(countryB),
+  );
+}
+
+function generateCountryComparisonData(
+  dataset: EprtrDataset | null,
+  industry: string,
+  categoryId: string,
+  metricName: string,
+  country1: string,
+  country2: string,
+): CountryComparisonData | null {
+  const metricData = getCountryMetricData(dataset, industry, categoryId, metricName);
+
+  if (!metricData || !country1 || !country2 || country1 === country2) {
+    return null;
+  }
+
+  const country1Values = metricData.countryValuesByYear.get(country1) ?? new Map<number, number>();
+  const country2Values = metricData.countryValuesByYear.get(country2) ?? new Map<number, number>();
+  const years = Array.from(new Set([...country1Values.keys(), ...country2Values.keys()]))
+    .sort((yearA, yearB) => yearA - yearB)
+    .slice(-10);
+
+  return {
+    data: years.map((year) => ({
+      year,
+      industry1: Math.round(country1Values.get(year) ?? 0),
+      industry2: Math.round(country2Values.get(year) ?? 0),
+    })),
+    country1Total: Array.from(country1Values.values()).reduce((sum, amount) => sum + amount, 0),
+    country2Total: Array.from(country2Values.values()).reduce((sum, amount) => sum + amount, 0),
+    country1Facilities: metricData.countryFacilityIds.get(country1)?.size ?? 0,
+    country2Facilities: metricData.countryFacilityIds.get(country2)?.size ?? 0,
+  };
 }
 
 function distanceKm(latA: number, lonA: number, latB: number, lonB: number) {
@@ -534,101 +680,133 @@ function getBrowserPosition() {
   });
 }
 
-function isLikelyInSweden(lat: number, lon: number) {
-  return lat >= 55 && lat <= 69.5 && lon >= 10 && lon <= 25;
+function pointInRing(lon: number, lat: number, ring: GeoJsonRing) {
+  let inside = false;
+
+  for (let index = 0, previousIndex = ring.length - 1; index < ring.length; previousIndex = index, index += 1) {
+    const [currentLon, currentLat] = ring[index];
+    const [previousLon, previousLat] = ring[previousIndex];
+    const intersects =
+      currentLat > lat !== previousLat > lat &&
+      lon < ((previousLon - currentLon) * (lat - currentLat)) / (previousLat - currentLat) + currentLon;
+
+    if (intersects) {
+      inside = !inside;
+    }
+  }
+
+  return inside;
 }
 
-function normalizePlaceName(value: string) {
-  return value
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/\b(kommun|municipality|city|county)\b/gi, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
+function pointInPolygon(lon: number, lat: number, polygon: GeoJsonPolygon) {
+  if (!polygon.length || !pointInRing(lon, lat, polygon[0])) {
+    return false;
+  }
+
+  return !polygon.slice(1).some((hole) => pointInRing(lon, lat, hole));
 }
 
-function placeNameCandidates(value: string) {
-  const normalized = normalizePlaceName(value);
-  return Array.from(new Set([normalized, normalized.replace(/s$/, '')].filter(Boolean)));
+function projectedPointDistanceKm(
+  originLat: number,
+  originLon: number,
+  segmentStart: GeoJsonPosition,
+  segmentEnd: GeoJsonPosition,
+) {
+  const kmPerDegreeLat = 111.32;
+  const kmPerDegreeLon = 111.32 * Math.cos((originLat * Math.PI) / 180);
+  const startX = (segmentStart[0] - originLon) * kmPerDegreeLon;
+  const startY = (segmentStart[1] - originLat) * kmPerDegreeLat;
+  const endX = (segmentEnd[0] - originLon) * kmPerDegreeLon;
+  const endY = (segmentEnd[1] - originLat) * kmPerDegreeLat;
+  const deltaX = endX - startX;
+  const deltaY = endY - startY;
+  const segmentLengthSquared = deltaX * deltaX + deltaY * deltaY;
+
+  if (segmentLengthSquared === 0) {
+    return Math.sqrt(startX * startX + startY * startY);
+  }
+
+  const projection = Math.max(0, Math.min(1, -(startX * deltaX + startY * deltaY) / segmentLengthSquared));
+  const closestX = startX + projection * deltaX;
+  const closestY = startY + projection * deltaY;
+
+  return Math.sqrt(closestX * closestX + closestY * closestY);
 }
 
-async function resolveMunicipality(lat: number, lon: number) {
-  const response = await fetch(
-    `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=10&addressdetails=1`,
-  );
+function ringDistanceKm(lat: number, lon: number, ring: GeoJsonRing) {
+  if (ring.length < 2) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  let minDistance = Number.POSITIVE_INFINITY;
+
+  for (let index = 0; index < ring.length - 1; index += 1) {
+    minDistance = Math.min(minDistance, projectedPointDistanceKm(lat, lon, ring[index], ring[index + 1]));
+  }
+
+  return minDistance;
+}
+
+function polygonDistanceKm(lat: number, lon: number, polygon: GeoJsonPolygon) {
+  if (pointInPolygon(lon, lat, polygon)) {
+    return 0;
+  }
+
+  return Math.min(...polygon.map((ring) => ringDistanceKm(lat, lon, ring)));
+}
+
+function protectedAreaDistanceKm(lat: number, lon: number, geometry: GeoJsonGeometry) {
+  switch (geometry.type) {
+    case 'Point':
+      return distanceKm(lat, lon, geometry.coordinates[1], geometry.coordinates[0]);
+    case 'MultiPoint':
+      return Math.min(...geometry.coordinates.map((point) => distanceKm(lat, lon, point[1], point[0])));
+    case 'Polygon':
+      return polygonDistanceKm(lat, lon, geometry.coordinates);
+    case 'MultiPolygon':
+      return Math.min(...geometry.coordinates.map((polygon) => polygonDistanceKm(lat, lon, polygon)));
+    default:
+      return Number.POSITIVE_INFINITY;
+  }
+}
+
+function protectedAreaTypeLabel(typeCode?: string) {
+  const typeLabels: Record<string, string> = {
+    DVO: 'Animal and plant protection area',
+    IF: 'Interim protection area',
+    KR: 'Cultural reserve',
+    LBSO: 'Landscape protection area',
+    NP: 'National park',
+    NM: 'Natural monument',
+    NR: 'Nature reserve',
+    NVO: 'Nature conservation area',
+    VSO: 'Water protection area',
+    OBO: 'Biotope protection area',
+  };
+
+  return typeCode ? typeLabels[typeCode] ?? typeCode : 'Protected area';
+}
+
+async function fetchNearbyProtectedAreas(lat: number, lon: number) {
+  const response = await fetch(protectedAreasUrl);
 
   if (!response.ok) {
-    throw new Error('Could not resolve your municipality.');
+    throw new Error('Could not load Naturvårdsverket protected-area GeoJSON.');
   }
 
-  const result = (await response.json()) as {
-    address?: Record<string, string | undefined>;
-  };
-  const address = result.address ?? {};
+  const featureCollection = (await response.json()) as ProtectedAreaFeatureCollection;
 
-  return (
-    address.municipality ||
-    address.city ||
-    address.town ||
-    address.village ||
-    address.county ||
-    null
-  );
-}
-
-async function fetchProtectedAreasForMunicipality(municipality: string) {
-  const municipalityCandidates = placeNameCandidates(municipality);
-  const typeResponse = await fetch('https://geodata.naturvardsverket.se/naturvardsregistret/rest/v3/omrade/skyddstyper');
-
-  if (!typeResponse.ok) {
-    throw new Error('Could not load Naturvårdsverket protected area types.');
-  }
-
-  const areaTypes = (await typeResponse.json()) as Array<{ key?: string; value?: string }>;
-  const selectedTypes = areaTypes.filter((areaType) =>
-    /nationalpark|naturreservat|naturvardsomrade|vattenskydd/i.test(normalizePlaceName(areaType.value ?? '')),
-  );
-  const areaResponses = await Promise.all(
-    selectedTypes.map(async (areaType) => {
-      if (!areaType.key) {
-        return [];
-      }
-
-      const response = await fetch(
-        `https://geodata.naturvardsverket.se/naturvardsregistret/rest/v3/omrade?skyddstypkod=${encodeURIComponent(areaType.key)}`,
-      );
-
-      if (!response.ok) {
-        return [];
-      }
-
-      const records = (await response.json()) as Array<{
-        namn?: string;
-        skyddstyp?: string;
-        skyddstypAsText?: string;
-        kommunerAsText?: string;
-        areaHa?: number;
-      }>;
-
-      return records
-        .filter((record) => {
-          const recordMunicipality = normalizePlaceName(record.kommunerAsText ?? '');
-          return municipalityCandidates.some((candidate) => recordMunicipality.includes(candidate));
-        })
-        .map<ProtectedAreaHit>((record) => ({
-          name: record.namn || 'Unnamed protected area',
-          type: record.skyddstypAsText || record.skyddstyp || areaType.value || 'Protected area',
-          municipality: record.kommunerAsText || municipality,
-          areaHa: typeof record.areaHa === 'number' ? record.areaHa : null,
-        }));
-    }),
-  );
-
-  return areaResponses
-    .flat()
-    .sort((areaA, areaB) => (areaB.areaHa ?? 0) - (areaA.areaHa ?? 0))
-    .slice(0, 5);
+  return featureCollection.features
+    .filter((feature) => feature.geometry)
+    .map((feature) => ({
+      id: feature.properties.NVRID || `${feature.properties.NAMN}-${feature.properties.skyddstyp}`,
+      name: feature.properties.NAMN || 'Unnamed protected area',
+      type: protectedAreaTypeLabel(feature.properties.skyddstyp),
+      distanceKm: protectedAreaDistanceKm(lat, lon, feature.geometry as GeoJsonGeometry),
+    }))
+    .filter((area) => area.distanceKm <= 25)
+    .sort((areaA, areaB) => areaA.distanceKm - areaB.distanceKm)
+    .slice(0, 6);
 }
 
 export default function App() {
@@ -643,6 +821,12 @@ export default function App() {
   const [nearbyStatus, setNearbyStatus] = useState<NearbyStatus>('idle');
   const [nearbyError, setNearbyError] = useState('');
   const [nearbyResult, setNearbyResult] = useState<NearbyResult | null>(null);
+  const [activePage, setActivePage] = useState<'dashboard' | 'country-detail'>('dashboard');
+  const [countryDetailIndustry, setCountryDetailIndustry] = useState('');
+  const [countryDetailCategory, setCountryDetailCategory] = useState('');
+  const [countryDetailMetric, setCountryDetailMetric] = useState('');
+  const [countryDetailCountry1, setCountryDetailCountry1] = useState('');
+  const [countryDetailCountry2, setCountryDetailCountry2] = useState('');
 
   useEffect(() => {
     let isActive = true;
@@ -704,6 +888,22 @@ export default function App() {
   const categoryOptions = eprtrDataset?.categories ?? [];
   const selectedCategory = eprtrDataset?.categoriesById.get(pollutionCategory);
   const metricOptions = selectedCategory?.metrics ?? [];
+  const selectedCountryDetailCategory = eprtrDataset?.categoriesById.get(countryDetailCategory);
+  const countryDetailMetricOptions = selectedCountryDetailCategory?.metrics ?? [];
+  const countryDetailCountries = getCountryOptions(
+    eprtrDataset,
+    countryDetailIndustry,
+    countryDetailCategory,
+    countryDetailMetric,
+  );
+  const countryDetailComparison = generateCountryComparisonData(
+    eprtrDataset,
+    countryDetailIndustry,
+    countryDetailCategory,
+    countryDetailMetric,
+    countryDetailCountry1,
+    countryDetailCountry2,
+  );
 
   useEffect(() => {
     if (!categoryOptions.length) {
@@ -727,6 +927,74 @@ export default function App() {
     }
   }, [metricOptions, pollutionMetric]);
 
+  useEffect(() => {
+    if (!industries.length) {
+      setCountryDetailIndustry('');
+      return;
+    }
+
+    if (!industries.includes(countryDetailIndustry)) {
+      setCountryDetailIndustry(comparison?.industry1 && industries.includes(comparison.industry1) ? comparison.industry1 : industries[0]);
+    }
+  }, [industries, countryDetailIndustry, comparison]);
+
+  useEffect(() => {
+    if (!categoryOptions.length) {
+      setCountryDetailCategory('');
+      return;
+    }
+
+    if (!categoryOptions.some((category) => category.id === countryDetailCategory)) {
+      setCountryDetailCategory(
+        comparison?.categoryId && categoryOptions.some((category) => category.id === comparison.categoryId)
+          ? comparison.categoryId
+          : categoryOptions[0].id,
+      );
+    }
+  }, [categoryOptions, countryDetailCategory, comparison]);
+
+  useEffect(() => {
+    if (!countryDetailMetricOptions.length) {
+      setCountryDetailMetric('');
+      return;
+    }
+
+    if (!countryDetailMetricOptions.includes(countryDetailMetric)) {
+      setCountryDetailMetric(
+        comparison?.metricName && countryDetailMetricOptions.includes(comparison.metricName)
+          ? comparison.metricName
+          : countryDetailMetricOptions[0],
+      );
+    }
+  }, [countryDetailMetricOptions, countryDetailMetric, comparison]);
+
+  useEffect(() => {
+    if (!countryDetailCountries.length) {
+      setCountryDetailCountry1('');
+      setCountryDetailCountry2('');
+      return;
+    }
+
+    const preferredCountry1 = comparison?.data.countryBreakdown1[0]?.country;
+    const preferredCountry2 = comparison?.data.countryBreakdown1.find((country) => country.country !== preferredCountry1)?.country;
+    const fallbackCountry1 =
+      preferredCountry1 && countryDetailCountries.includes(preferredCountry1)
+        ? preferredCountry1
+        : countryDetailCountries[0];
+    const fallbackCountry2 =
+      preferredCountry2 && countryDetailCountries.includes(preferredCountry2)
+        ? preferredCountry2
+        : countryDetailCountries.find((country) => country !== fallbackCountry1) ?? '';
+
+    if (!countryDetailCountries.includes(countryDetailCountry1)) {
+      setCountryDetailCountry1(fallbackCountry1);
+    }
+
+    if (!countryDetailCountries.includes(countryDetailCountry2) || countryDetailCountry2 === countryDetailCountry1) {
+      setCountryDetailCountry2(fallbackCountry2);
+    }
+  }, [countryDetailCountries, countryDetailCountry1, countryDetailCountry2, comparison]);
+
   const handleCompare = () => {
     if (eprtrDataset && industry1 && industry2 && industry1 !== industry2 && pollutionMetric) {
       setComparison({
@@ -737,6 +1005,21 @@ export default function App() {
         data: generateComparisonData(industry1, industry2, pollutionCategory, pollutionMetric, eprtrDataset),
       });
     }
+  };
+
+  const openCountryDetailPage = () => {
+    if (comparison) {
+      setCountryDetailIndustry(comparison.industry1);
+      setCountryDetailCategory(comparison.categoryId);
+      setCountryDetailMetric(comparison.metricName);
+      setCountryDetailCountry1(comparison.data.countryBreakdown1[0]?.country ?? '');
+      setCountryDetailCountry2(comparison.data.countryBreakdown1[1]?.country ?? '');
+    }
+
+    setActivePage('country-detail');
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
   };
 
   const handleLogin = (email: string) => {
@@ -776,30 +1059,19 @@ export default function App() {
         .sort((facilityA, facilityB) => facilityA.distanceKm - facilityB.distanceKm)
         .slice(0, 6);
 
-      let municipality: string | null = null;
       let protectedAreas: ProtectedAreaHit[] = [];
-      let protectedAreaNote = 'Naturvårdsverket lookup is available for locations in Sweden.';
+      let protectedAreaNote = 'Naturvårdsverket protected-area geometry loaded from the Halland GeoJSON dataset.';
 
-      if (isLikelyInSweden(latitude, longitude)) {
-        try {
-          municipality = await resolveMunicipality(latitude, longitude);
-
-          if (municipality) {
-            protectedAreas = await fetchProtectedAreasForMunicipality(municipality);
-            protectedAreaNote = protectedAreas.length
-              ? `Matched Naturvårdsverket protected-area records for ${municipality}.`
-              : `No Naturvårdsverket protected-area records matched ${municipality}.`;
-          } else {
-            protectedAreaNote = 'Could not resolve a Swedish municipality for this location.';
-          }
-        } catch (error) {
-          protectedAreaNote =
-            error instanceof Error
-              ? error.message
-              : 'Could not complete the Naturvårdsverket lookup right now.';
-        }
-      } else {
-        protectedAreaNote = 'Naturvårdsverket protected-area lookup is Sweden-only; your location appears outside Sweden.';
+      try {
+        protectedAreas = await fetchNearbyProtectedAreas(latitude, longitude);
+        protectedAreaNote = protectedAreas.length
+          ? 'Found Naturvårdsverket protected-area polygons within 25 km.'
+          : 'No Naturvårdsverket protected-area polygons were found within 25 km in the Halland GeoJSON dataset.';
+      } catch (error) {
+        protectedAreaNote =
+          error instanceof Error
+            ? error.message
+            : 'Could not complete the Naturvårdsverket protected-area lookup right now.';
       }
 
       setNearbyResult({
@@ -807,7 +1079,6 @@ export default function App() {
         lon: longitude,
         factories,
         protectedAreas,
-        municipality,
         protectedAreaNote,
       });
       setNearbyStatus('ready');
@@ -842,6 +1113,173 @@ export default function App() {
     };
   }, [comparison]);
 
+  const maxCountryFootprint = comparison
+    ? Math.max(
+        1,
+        ...comparison.data.countryBreakdown1.map((country) => country.amount),
+        ...comparison.data.countryBreakdown2.map((country) => country.amount),
+      )
+    : 1;
+
+  if (activePage === 'country-detail' && userEmail) {
+    return (
+      <div className="min-h-screen bg-[#111b24] text-[#14212b]">
+        <div
+          className="pointer-events-none fixed inset-0 opacity-20"
+          style={{
+            backgroundImage: `linear-gradient(90deg, rgba(17, 27, 36, 0.42), rgba(17, 27, 36, 0.88)), url(${brandPhoto})`,
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+          }}
+        />
+        <div className="relative container mx-auto px-4 py-8 sm:px-6 lg:py-12">
+          <header className="mb-10 flex items-center justify-between gap-4">
+            <div className="flex min-w-0 items-center gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-white shadow-lg shadow-black/15">
+                <span className="text-3xl font-black leading-none text-[#f3703d]">Of</span>
+              </div>
+              <img src={brandLogo} alt="Icons Of" className="h-9 w-auto max-w-[180px] object-contain" />
+            </div>
+            <button
+              type="button"
+              onClick={() => setActivePage('dashboard')}
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-white/15 bg-white/10 px-4 py-2 text-sm font-bold text-white/85 backdrop-blur transition hover:bg-white/15"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Back to dashboard
+            </button>
+          </header>
+
+          <div className="mx-auto max-w-7xl space-y-8">
+            <motion.section
+              initial={{ opacity: 0, y: 18 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5 }}
+              className="rounded-lg border border-white/70 bg-white p-5 shadow-xl shadow-black/15 sm:p-8"
+            >
+              <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div className="mb-4 inline-flex items-center gap-2 rounded-lg bg-[#14212b] px-3 py-2 text-xs font-bold text-white">
+                    <FileText className="h-4 w-4 text-[#ff7a18]" />
+                    Paid country detail
+                  </div>
+                  <h1 className="text-3xl font-black leading-tight text-[#14212b] sm:text-4xl">
+                    Country-by-country footprint
+                  </h1>
+                  <p className="mt-3 max-w-3xl text-base leading-7 text-[#526371]">
+                    Choose one industry, two countries, and a pollution metric to compare where reported facility-level footprint is concentrated.
+                  </p>
+                </div>
+                <p className="rounded-lg bg-[#eef9fd] px-3 py-2 text-xs font-bold uppercase text-[#168fca]">
+                  Unlocked for {userEmail}
+                </p>
+              </div>
+
+              <div className="grid gap-5 lg:grid-cols-2">
+                <IndustrySelector
+                  label="Industry"
+                  value={countryDetailIndustry}
+                  onChange={setCountryDetailIndustry}
+                  industries={industries}
+                  color="border-[#25a9e0]/30 focus:border-[#25a9e0] focus:ring-[#25a9e0]"
+                />
+
+                <div className="flex flex-col gap-3">
+                  <label className="text-sm font-bold text-[#14212b]">Pollution Category</label>
+                  <div className="relative">
+                    <select
+                      value={countryDetailCategory}
+                      onChange={(event) => setCountryDetailCategory(event.target.value)}
+                      className="w-full cursor-pointer appearance-none rounded-lg border-2 border-[#f3703d]/30 bg-[#f8fafb] px-5 py-4 pr-12 text-[#14212b] transition-all hover:bg-white hover:shadow-md focus:border-[#f3703d] focus:bg-white focus:outline-none focus:ring-4 focus:ring-[#f3703d] focus:ring-opacity-20"
+                    >
+                      {categoryOptions.map((category) => (
+                        <option key={category.id} value={category.id}>
+                          {category.label}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-4 top-1/2 h-5 w-5 -translate-y-1/2 text-[#526371]" />
+                  </div>
+                  <p className="text-xs leading-5 text-[#526371]">{selectedCountryDetailCategory?.description}</p>
+                </div>
+
+                <IndustrySelector
+                  label={selectedCountryDetailCategory?.metricLabel ?? 'Pollution Metric'}
+                  value={countryDetailMetric}
+                  onChange={setCountryDetailMetric}
+                  industries={countryDetailMetricOptions}
+                  color="border-[#14212b]/20 focus:border-[#14212b] focus:ring-[#14212b]"
+                  placeholder="Select metric..."
+                />
+                <IndustrySelector
+                  label="First Country"
+                  value={countryDetailCountry1}
+                  onChange={setCountryDetailCountry1}
+                  industries={countryDetailCountries}
+                  color="border-[#25a9e0]/30 focus:border-[#25a9e0] focus:ring-[#25a9e0]"
+                  placeholder="Select country..."
+                />
+                <IndustrySelector
+                  label="Second Country"
+                  value={countryDetailCountry2}
+                  onChange={setCountryDetailCountry2}
+                  industries={countryDetailCountries.filter((country) => country !== countryDetailCountry1)}
+                  color="border-[#f05a9d]/30 focus:border-[#f05a9d] focus:ring-[#f05a9d]"
+                  placeholder="Select country..."
+                />
+              </div>
+            </motion.section>
+
+            <ComparisonCard
+              title={`${countryDetailMetric || 'Metric'} Release Trends by Country`}
+              icon={<TrendingUp className="w-6 h-6" />}
+              delay={0.1}
+              shareId="country-detail-trends"
+              shareText={`I compared country-level ${countryDetailMetric} footprint for ${countryDetailIndustry} in Industry Duel.`}
+            >
+              {countryDetailComparison && countryDetailComparison.data.length ? (
+                <>
+                  <EmissionsChart
+                    industry1={countryDetailCountry1}
+                    industry2={countryDetailCountry2}
+                    data={countryDetailComparison.data}
+                    yAxisLabel={categoryUnitLabel}
+                    tooltipLabel={selectedCountryDetailCategory?.valueLabel ?? 'Reported amount'}
+                    unitLabel={categoryUnitLabel}
+                  />
+                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                    <div className="border-l-4 border-[#25a9e0] bg-[#eef9fd] p-4">
+                      <p className="mb-1 text-sm text-[#526371]">Total reported footprint</p>
+                      <p className="text-2xl font-black text-[#168fca]">
+                        {Math.round(countryDetailComparison.country1Total).toLocaleString()} {categoryUnitLabel}
+                      </p>
+                      <p className="mt-1 text-xs text-[#526371]">
+                        {countryDetailCountry1} · {countryDetailComparison.country1Facilities} facilities
+                      </p>
+                    </div>
+                    <div className="border-l-4 border-[#f05a9d] bg-[#fff0f7] p-4">
+                      <p className="mb-1 text-sm text-[#526371]">Total reported footprint</p>
+                      <p className="text-2xl font-black text-[#d83d87]">
+                        {Math.round(countryDetailComparison.country2Total).toLocaleString()} {categoryUnitLabel}
+                      </p>
+                      <p className="mt-1 text-xs text-[#526371]">
+                        {countryDetailCountry2} · {countryDetailComparison.country2Facilities} facilities
+                      </p>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="rounded-lg border border-[#d9e2e8] bg-[#f8fafb] p-5 text-sm leading-6 text-[#526371]">
+                  Choose an industry, two different countries, and a pollution metric with facility-level records.
+                </div>
+              )}
+            </ComparisonCard>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#111b24] text-[#14212b]">
       <div
@@ -854,14 +1292,11 @@ export default function App() {
       />
       <div className="relative container mx-auto px-4 py-8 sm:px-6 lg:py-12">
         <header className="mb-12 flex items-center justify-between gap-4">
-          <div className="flex min-w-0 items-center gap-4">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-white shadow-lg shadow-black/15">
-              <span className="text-3xl font-black leading-none text-[#f3703d]">Of</span>
+          <div className="flex min-w-0 items-center gap-5">
+            <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-lg bg-white shadow-lg shadow-black/15">
+              <span className="text-5xl font-black leading-none text-[#f3703d]">Of</span>
             </div>
-            <img src={brandLogo} alt="Icons Of" className="h-9 w-auto max-w-[180px] object-contain" />
-          </div>
-          <div className="hidden rounded-lg border border-white/15 bg-white/10 px-4 py-2 text-sm font-medium text-white/80 backdrop-blur sm:block">
-            European open data prototype
+            <img src={brandLogo} alt="Icons Of" className="h-16 w-auto max-w-[300px] object-contain" />
           </div>
         </header>
 
@@ -871,10 +1306,6 @@ export default function App() {
           transition={{ duration: 0.6 }}
           className="mb-10 max-w-4xl"
         >
-          <div className="mb-5 inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/10 px-4 py-2 text-sm font-medium text-white/80 backdrop-blur">
-            <span className="h-2 w-2 rounded-full bg-[#ff7a18]" />
-            Industry emissions comparison
-          </div>
           <h1 className="mb-5 text-5xl font-black leading-none text-white sm:text-6xl lg:text-7xl">
             Industry Duel
           </h1>
@@ -1061,7 +1492,12 @@ export default function App() {
                 </div>
               </div>
 
-              <AccountGate userEmail={userEmail} onLogin={handleLogin} onLogout={handleLogout} />
+              <AccountGate
+                userEmail={userEmail}
+                onLogin={handleLogin}
+                onLogout={handleLogout}
+                onCountryDetail={openCountryDetailPage}
+              />
 
               {userEmail && reportInsights && (
                 <div className="mt-6 grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
@@ -1122,6 +1558,74 @@ export default function App() {
                   </div>
 
                   <div className="rounded-lg border border-[#d9e2e8] bg-white p-5 lg:col-span-2">
+                    <div className="mb-5 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+                      <div>
+                        <p className="text-sm font-bold text-[#14212b]">Country-by-country detail</p>
+                        <p className="mt-1 text-sm leading-6 text-[#526371]">
+                          Inspect where each selected industry reports the largest footprint for {comparison.data.metricName}.
+                        </p>
+                      </div>
+                      <span className="text-xs font-bold uppercase text-[#526371]">
+                        Top reporting countries
+                      </span>
+                    </div>
+
+                    <div className="grid gap-4 lg:grid-cols-2">
+                      {[
+                        {
+                          industry: comparison.industry1,
+                          colorClass: 'bg-[#25a9e0]',
+                          softClass: 'bg-[#eef9fd]',
+                          textClass: 'text-[#168fca]',
+                          countries: comparison.data.countryBreakdown1,
+                        },
+                        {
+                          industry: comparison.industry2,
+                          colorClass: 'bg-[#f05a9d]',
+                          softClass: 'bg-[#fff0f7]',
+                          textClass: 'text-[#d83d87]',
+                          countries: comparison.data.countryBreakdown2,
+                        },
+                      ].map((group) => (
+                        <div key={group.industry} className="rounded-lg border border-[#d9e2e8] bg-[#f8fafb] p-4">
+                          <p className="mb-4 text-sm font-black text-[#14212b]">{group.industry}</p>
+                          {group.countries.length ? (
+                            <div className="space-y-3">
+                              {group.countries.map((country, index) => (
+                                <div key={`${group.industry}-${country.country}`}>
+                                  <div className="mb-1 flex items-center justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <p className="truncate text-sm font-black text-[#14212b]">
+                                        {index + 1}. {country.country}
+                                      </p>
+                                      <p className="text-xs text-[#526371]">{country.facilities} reporting facilities</p>
+                                    </div>
+                                    <p className={`shrink-0 text-sm font-black ${group.textClass}`}>
+                                      {Math.round(country.amount).toLocaleString()} {comparison.data.unitLabel}
+                                    </p>
+                                  </div>
+                                  <div className={`h-2 overflow-hidden rounded-full ${group.softClass}`}>
+                                    <div
+                                      className={`h-full rounded-full ${group.colorClass}`}
+                                      style={{
+                                        width: `${Math.max(6, (country.amount / maxCountryFootprint) * 100)}%`,
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="rounded-lg bg-white p-3 text-sm text-[#526371]">
+                              No facility-level country data is available for this selection.
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-[#d9e2e8] bg-white p-5 lg:col-span-2">
                     <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                       <div className="max-w-2xl">
                         <div className="mb-3 inline-flex items-center gap-2 rounded-lg bg-[#14212b] px-3 py-2 text-xs font-bold text-white">
@@ -1130,7 +1634,7 @@ export default function App() {
                         </div>
                         <h4 className="text-xl font-black text-[#14212b]">Any factories or Naturvårdsverket areas near my room?</h4>
                         <p className="mt-2 text-sm leading-6 text-[#526371]">
-                          Uses your browser location, raw E-PRTR facility coordinates, and Swedish protected-area records when your location is in Sweden.
+                          Uses your browser location, raw E-PRTR facility coordinates, and Naturvårdsverket protected-area polygons from the Halland GeoJSON dataset.
                         </p>
                       </div>
                       <button
@@ -1198,12 +1702,16 @@ export default function App() {
                           {nearbyResult.protectedAreas.length ? (
                             <div className="space-y-3">
                               {nearbyResult.protectedAreas.map((area) => (
-                                <div key={`${area.name}-${area.type}-${area.municipality}`} className="rounded-lg bg-white p-3">
-                                  <p className="text-sm font-black text-[#14212b]">{area.name}</p>
-                                  <p className="mt-1 text-xs leading-5 text-[#526371]">
-                                    {area.type} · {area.municipality}
-                                    {area.areaHa !== null ? ` · ${Math.round(area.areaHa).toLocaleString()} ha` : ''}
-                                  </p>
+                                <div key={`${area.id}-${area.distanceKm}`} className="rounded-lg bg-white p-3">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                      <p className="text-sm font-black text-[#14212b]">{area.name}</p>
+                                      <p className="mt-1 text-xs leading-5 text-[#526371]">{area.type}</p>
+                                    </div>
+                                    <span className="shrink-0 rounded-lg bg-[#fff4ec] px-2 py-1 text-xs font-black text-[#d9571f]">
+                                      {area.distanceKm === 0 ? 'Inside' : `${area.distanceKm.toFixed(1)} km`}
+                                    </span>
+                                  </div>
                                 </div>
                               ))}
                             </div>

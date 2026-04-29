@@ -5,6 +5,7 @@ interface AccountGateProps {
   userEmail: string | null;
   onLogin: (email: string) => void;
   onLogout: () => void;
+  onCountryDetail?: () => void;
 }
 
 function validateEmail(email: string) {
@@ -33,7 +34,7 @@ const unlockBenefits = [
   },
 ];
 
-export function AccountGate({ userEmail, onLogin, onLogout }: AccountGateProps) {
+export function AccountGate({ userEmail, onLogin, onLogout, onCountryDetail }: AccountGateProps) {
   const [email, setEmail] = useState('');
   const [error, setError] = useState('');
 
@@ -74,15 +75,36 @@ export function AccountGate({ userEmail, onLogin, onLogout }: AccountGateProps) 
         </div>
 
         <div className="divide-y divide-[#d9e2e8] rounded-lg border border-[#d9e2e8]">
-          {unlockBenefits.map((benefit) => (
-            <div key={benefit.title} className="flex gap-4 p-5">
-              <CheckCircle className="mt-0.5 h-6 w-6 shrink-0 text-[#168fca]" />
-              <div>
-                <p className="text-lg font-black leading-tight text-[#14212b]">{benefit.title}</p>
-                <p className="mt-2 text-base leading-7 text-[#526371]">{benefit.description}</p>
+          {unlockBenefits.map((benefit) => {
+            const benefitContent = (
+              <>
+                <CheckCircle className="mt-0.5 h-6 w-6 shrink-0 text-[#168fca]" />
+                <div>
+                  <p className="text-lg font-black leading-tight text-[#14212b]">{benefit.title}</p>
+                  <p className="mt-2 text-base leading-7 text-[#526371]">{benefit.description}</p>
+                </div>
+              </>
+            );
+
+            if (benefit.title === 'Country-by-country detail') {
+              return (
+                <button
+                  key={benefit.title}
+                  type="button"
+                  onClick={onCountryDetail}
+                  className="flex w-full gap-4 p-5 text-left transition hover:bg-[#f8fafb]"
+                >
+                  {benefitContent}
+                </button>
+              );
+            }
+
+            return (
+              <div key={benefit.title} className="flex gap-4 p-5">
+                {benefitContent}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         <div className="mt-5 rounded-lg bg-[#14212b] p-5 text-white">

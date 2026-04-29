@@ -51,6 +51,8 @@ For each selected industry pair, category, and metric, the app calculates:
 - Average annual amount for each industry.
 - Reporting facility count for each industry.
 - Representative mapped facilities, prioritised by largest reported amount.
+- Paid country-by-country detail, aggregating facility-level rows by `countryName` and counting distinct reporting facilities per country.
+- Paid country-detail page where users choose one industry, two countries, a pollution category, and a metric to compare country-level trends.
 
 When a category has both sector-level and facility-level files, sector-level rows provide trend totals and facility-level rows provide facility counts and map points. When a category only has facility-level files, facility rows provide both trend values and facility details.
 
@@ -61,7 +63,7 @@ The unlocked account section includes a location check:
 - Browser geolocation provides the user's current latitude and longitude.
 - Nearby factories are computed from raw E-PRTR facility rows with `Latitude`, `Longitude`, `facilityName`, `city`, `countryName`, and `EPRTR_SectorName`.
 - Distances use the haversine formula and show the closest raw E-PRTR facilities within 50 km.
-- The Naturvårdsverket panel is Sweden-specific. It resolves the user's municipality and then checks Naturvårdsverket protected-area records for matching municipality text.
+- The Naturvårdsverket panel loads `Varberg-Hackathon/hackathon_data/halland_skyddade_omraden.geojson` and checks nearby protected-area polygons within 25 km.
 
 The app does not keep a hardcoded factory list. Facility options come from the raw CSV files loaded at runtime.
 
