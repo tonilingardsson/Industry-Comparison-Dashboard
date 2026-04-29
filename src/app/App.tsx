@@ -906,26 +906,29 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (!categoryOptions.length) {
-      setPollutionCategory('');
+    if (!pollutionCategory) {
       return;
     }
 
-    if (!categoryOptions.some((category) => category.id === pollutionCategory)) {
-      setPollutionCategory(categoryOptions[0].id);
+    if (!categoryOptions.length || !categoryOptions.some((category) => category.id === pollutionCategory)) {
+      setPollutionCategory('');
     }
   }, [categoryOptions, pollutionCategory]);
 
   useEffect(() => {
-    if (!metricOptions.length) {
-      setPollutionMetric('');
+    if (!pollutionMetric) {
       return;
     }
 
-    if (!metricOptions.includes(pollutionMetric)) {
-      setPollutionMetric(metricOptions[0]);
+    if (!metricOptions.length || !metricOptions.includes(pollutionMetric)) {
+      setPollutionMetric('');
     }
   }, [metricOptions, pollutionMetric]);
+
+  const handlePollutionCategoryChange = (categoryId: string) => {
+    setPollutionCategory(categoryId);
+    setPollutionMetric('');
+  };
 
   useEffect(() => {
     if (!industries.length) {
@@ -1134,12 +1137,18 @@ export default function App() {
         />
         <div className="relative container mx-auto px-4 py-8 sm:px-6 lg:py-12">
           <header className="mb-10 flex items-center justify-between gap-4">
-            <div className="flex min-w-0 items-center gap-4">
+            <a
+              href="https://www.iconsof.se/"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Open Icons Of website"
+              className="flex min-w-0 items-center gap-4"
+            >
               <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-white shadow-lg shadow-black/15">
                 <span className="text-3xl font-black leading-none text-[#f3703d]">Of</span>
               </div>
               <img src={brandLogo} alt="Icons Of" className="h-9 w-auto max-w-[180px] object-contain" />
-            </div>
+            </a>
             <button
               type="button"
               onClick={() => setActivePage('dashboard')}
@@ -1292,12 +1301,18 @@ export default function App() {
       />
       <div className="relative container mx-auto px-4 py-8 sm:px-6 lg:py-12">
         <header className="mb-12 flex items-center justify-between gap-4">
-          <div className="flex min-w-0 items-center gap-5">
+          <a
+            href="https://www.iconsof.se/"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Open Icons Of website"
+            className="flex min-w-0 items-center gap-5"
+          >
             <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-lg bg-white shadow-lg shadow-black/15">
               <span className="text-5xl font-black leading-none text-[#f3703d]">Of</span>
             </div>
             <img src={brandLogo} alt="Icons Of" className="h-16 w-auto max-w-[300px] object-contain" />
-          </div>
+          </a>
         </header>
 
         <motion.div
@@ -1347,9 +1362,10 @@ export default function App() {
                 <div className="relative">
                   <select
                     value={pollutionCategory}
-                    onChange={(event) => setPollutionCategory(event.target.value)}
+                    onChange={(event) => handlePollutionCategoryChange(event.target.value)}
                     className="w-full cursor-pointer appearance-none rounded-lg border-2 border-[#f3703d]/30 bg-[#f8fafb] px-5 py-4 pr-12 text-[#14212b] transition-all hover:bg-white hover:shadow-md focus:border-[#f3703d] focus:bg-white focus:outline-none focus:ring-4 focus:ring-[#f3703d] focus:ring-opacity-20"
                   >
+                    <option value="">Select category...</option>
                     {categoryOptions.map((category) => (
                       <option key={category.id} value={category.id}>
                         {category.label}
@@ -1363,12 +1379,12 @@ export default function App() {
                 </p>
               </div>
               <IndustrySelector
-                label={selectedCategory?.metricLabel ?? 'Metric'}
+                label={selectedCategory?.metricLabel ?? 'Pollutant / Metric'}
                 value={pollutionMetric}
                 onChange={setPollutionMetric}
                 industries={metricOptions}
                 color="border-[#14212b]/20 focus:border-[#14212b] focus:ring-[#14212b]"
-                placeholder="Select metric..."
+                placeholder={selectedCategory ? `Select ${selectedCategory.metricLabel.toLowerCase()}...` : 'Select category first...'}
               />
             </div>
             <button
